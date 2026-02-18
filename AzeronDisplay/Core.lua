@@ -51,6 +51,7 @@ local SPECIAL_COOLDOWN_SPELLS = (NS.constants and NS.constants.SPECIAL_COOLDOWN_
   [22812] = 34.0, -- Barkskin
 }
 local CooldownModule = NS.modules and NS.modules.Cooldowns or nil
+local BindingsModule = NS.modules and NS.modules.Bindings or nil
 
 local function ClampNumber(v, minV, maxV, fallback)
   local n = tonumber(v)
@@ -644,7 +645,22 @@ local function NormalizeKeyToken(s)
   return tostring(s):upper():gsub("%s+", ""):gsub("%-", "")
 end
 
+if BindingsModule and BindingsModule.Init then
+  BindingsModule.Init({
+    NormalizeKeyToken = NormalizeKeyToken,
+    SafeNumber = SafeNumber,
+    GetRealActionSlot = GetRealActionSlot,
+    GetMultiBarActionSlot = GetMultiBarActionSlot,
+    GetActionDisplayName = GetActionDisplayName,
+    GetSpellTextureByName = GetSpellTextureByName,
+    MULTIBAR_PREFIX = MULTIBAR_PREFIX,
+  })
+end
+
 local function GetFrameHotKeyText(frame)
+  if BindingsModule and BindingsModule.GetFrameHotKeyText then
+    return BindingsModule.GetFrameHotKeyText(frame)
+  end
   if not frame then return nil end
   if frame.HotKey and frame.HotKey.GetText then
     return frame.HotKey:GetText()
@@ -659,6 +675,9 @@ local function GetFrameHotKeyText(frame)
 end
 
 local function FindActionButtonByKeyLabel(key)
+  if BindingsModule and BindingsModule.FindActionButtonByKeyLabel then
+    return BindingsModule.FindActionButtonByKeyLabel(key)
+  end
   local want = NormalizeKeyToken(key)
   if not want then return nil, nil, nil end
   for i = 1, 12 do
@@ -679,6 +698,9 @@ local function FindActionButtonByKeyLabel(key)
 end
 
 local function ResolveWoWBindingFrameAndSlot(bindKey)
+  if BindingsModule and BindingsModule.ResolveWoWBindingFrameAndSlot then
+    return BindingsModule.ResolveWoWBindingFrameAndSlot(bindKey)
+  end
   if not bindKey or bindKey == "" then return nil, nil, nil, nil, nil end
   local abFrame, abSlot, abButton = FindActionButtonByKeyLabel(bindKey)
   if abFrame and abSlot then
@@ -893,6 +915,9 @@ end
 
 -- Returns: displayName, iconTex, actionSlot, spellName, wowBtnFrame
 local function GetBindingInfo(key, modifier)
+  if BindingsModule and BindingsModule.GetBindingInfo then
+    return BindingsModule.GetBindingInfo(key, modifier)
+  end
   local bindKey = key
   if modifier and modifier ~= "NONE" then
     bindKey = modifier .. "-" .. key
