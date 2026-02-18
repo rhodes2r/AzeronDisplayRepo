@@ -10,5 +10,6 @@
 30_Bindings.lua
 40_Indicators.lua
 50_Config.lua
+60_Runtime.lua
 Core.lua
 90_Debug.lua

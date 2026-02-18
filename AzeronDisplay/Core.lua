@@ -54,6 +54,7 @@ local CooldownModule = NS.modules and NS.modules.Cooldowns or nil
 local BindingsModule = NS.modules and NS.modules.Bindings or nil
 local IndicatorsModule = NS.modules and NS.modules.Indicators or nil
 local ConfigModule = NS.modules and NS.modules.Config or nil
+local RuntimeModule = NS.modules and NS.modules.Runtime or nil
 
 local function ClampNumber(v, minV, maxV, fallback)
   local n = tonumber(v)
@@ -2672,7 +2673,36 @@ end)
 -- Fast OnUpdate: modifier detection + usability/range (throttled to ~20fps)
 local updateAccum = 0
 local cooldownAccum = 0
+local runtimeState = (RuntimeModule and RuntimeModule.NewState and RuntimeModule.NewState()) or nil
+local function OnModifierStateChanged(newMod)
+  currentModifierState = newMod
+  for _, btn in ipairs(buttons) do
+    if btn and btn.bindings then
+      local bd = btn.bindings[newMod]
+      btn.icon:SetTexture(bd and bd.icon or nil)
+      local keyText = GetDisplayKeyText(GetBaseKey(btn.keyID))
+      if bd and bd.name and bd.name ~= "Unbound" and keyText ~= "" then
+        btn.keyLabel:SetText(keyText)
+      else
+        btn.keyLabel:SetText("")
+      end
+    end
+  end
+end
 anchor:SetScript("OnUpdate", function(self, elapsed)
+  if RuntimeModule and RuntimeModule.HandleOnUpdate and runtimeState then
+    RuntimeModule.HandleOnUpdate({
+      updateThreshold = 0.02,
+      cooldownThreshold = 0.10,
+      GetCurrentModifierState = GetCurrentModifierState,
+      GetModifierState = function() return currentModifierState end,
+      SetModifierState = function(v) currentModifierState = v end,
+      OnModifierChanged = OnModifierStateChanged,
+      UpdateCooldowns = UpdateCooldowns,
+      UpdateUsability = UpdateUsability,
+    }, runtimeState, elapsed)
+    return
+  end
   updateAccum = updateAccum + elapsed
   cooldownAccum = cooldownAccum + elapsed
   if updateAccum < 0.02 then return end
@@ -2680,19 +2710,7 @@ anchor:SetScript("OnUpdate", function(self, elapsed)
 
   local newMod = GetCurrentModifierState()
   if newMod ~= currentModifierState then
-    currentModifierState = newMod
-    for _, btn in ipairs(buttons) do
-      if btn and btn.bindings then
-        local bd = btn.bindings[newMod]
-        btn.icon:SetTexture(bd and bd.icon or nil)
-        local keyText = GetDisplayKeyText(GetBaseKey(btn.keyID))
-        if bd and bd.name and bd.name ~= "Unbound" and keyText ~= "" then
-          btn.keyLabel:SetText(keyText)
-        else
-          btn.keyLabel:SetText("")
-        end
-      end
-    end
+    OnModifierStateChanged(newMod)
     UpdateCooldowns()
   end
   if cooldownAccum >= 0.10 then
