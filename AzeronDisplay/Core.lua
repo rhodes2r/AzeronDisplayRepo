@@ -52,6 +52,7 @@ local SPECIAL_COOLDOWN_SPELLS = (NS.constants and NS.constants.SPECIAL_COOLDOWN_
 }
 local CooldownModule = NS.modules and NS.modules.Cooldowns or nil
 local BindingsModule = NS.modules and NS.modules.Bindings or nil
+local IndicatorsModule = NS.modules and NS.modules.Indicators or nil
 
 local function ClampNumber(v, minV, maxV, fallback)
   local n = tonumber(v)
@@ -2067,6 +2068,19 @@ end
 -- Update: usability coloring, range, active highlight, proc glow
 ---------------------------------------------------------------------------
 UpdateUsability = function()
+  if IndicatorsModule and IndicatorsModule.UpdateUsability then
+    IndicatorsModule.UpdateUsability({
+      currentModifierState = currentModifierState,
+      buttons = buttons,
+      CollectGlowingWoWSources = CollectGlowingWoWSources,
+      GetLiveActionSlotFromBinding = GetLiveActionSlotFromBinding,
+      IsWoWButtonPressed = IsWoWButtonPressed,
+      ApplyProcSourceVisual = ApplyProcSourceVisual,
+      EnsureProcAnimation = EnsureProcAnimation,
+      StopProcAnimation = StopProcAnimation,
+    })
+    return
+  end
   local ms = currentModifierState or "NONE"
   local glowingSources = CollectGlowingWoWSources()
   local glowingSlots = {}
