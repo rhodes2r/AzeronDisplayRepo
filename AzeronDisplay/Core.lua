@@ -50,16 +50,7 @@ local PROC_BORDER_TEXTURE = "Interface\\Buttons\\UI-ActionButton-Border"
 local SPECIAL_COOLDOWN_SPELLS = (NS.constants and NS.constants.SPECIAL_COOLDOWN_SPELLS) or {
   [22812] = 34.0, -- Barkskin
 }
-
-local function GetSpellBaseCooldownSeconds(spellID)
-  local sid = tonumber(tostring(spellID)) or 0
-  if sid <= 0 or not GetSpellBaseCooldown then return 0 end
-  local ok, baseMS = pcall(GetSpellBaseCooldown, sid)
-  if not ok then return 0 end
-  local ms = tonumber(tostring(baseMS)) or 0
-  if ms <= 0 then return 0 end
-  return ms / 1000
-end
+local CooldownModule = NS.modules and NS.modules.Cooldowns or nil
 
 local function ClampNumber(v, minV, maxV, fallback)
   local n = tonumber(v)
@@ -1772,12 +1763,11 @@ UpdateCooldowns = function()
                 resolvedSpellID = 0
               end
             end
-            local overrideExpected = SPECIAL_COOLDOWN_SPELLS[resolvedSpellID]
-            local baseExpected = GetSpellBaseCooldownSeconds(resolvedSpellID)
-            if baseExpected > 0 and baseExpected <= 1.6 then
-              baseExpected = 0
+            if CooldownModule and CooldownModule.GetExpectedDuration then
+              specialCooldownExpected = CooldownModule.GetExpectedDuration(resolvedSpellID, SPECIAL_COOLDOWN_SPELLS)
+            else
+              specialCooldownExpected = SPECIAL_COOLDOWN_SPELLS[resolvedSpellID]
             end
-            specialCooldownExpected = overrideExpected or ((baseExpected > 0) and baseExpected or nil)
             isSpecialCooldownBinding = (resolvedSpellID > 0)
           end
           if GetActionCooldown then
@@ -1831,33 +1821,42 @@ UpdateCooldowns = function()
           local wowRemain = considerTimer(wowStart, wowDur)
 
           if isSpecialCooldownBinding then
-            local expectedDur = SafeNumber(specialCooldownExpected, 0)
-            if expectedDur <= 0 then
-              expectedDur = SafeNumber(bd._specCdFallbackDur, 0)
-            end
-            if wowShown then
-              local wasShown = (bd._specCdShown == true)
-              if not wasShown then
-                -- Start internal clock on first true edge.
-                bd._specCdShown = true
-                bd._specCdStart = now
-                -- If source reports a plausible duration, learn it; otherwise use 34s.
-                local ws, wd = NormalizeCooldownPair(wowStart, wowDur)
-                if ws > 0 and wd > 1.6 and wd < 120 then
-                  bd._specCdDur = wd
-                  bd._specCdFallbackDur = wd
-                else
-                  bd._specCdDur = expectedDur
-                end
-              end
-              local cs = SafeNumber(bd._specCdStart, now)
-              local cd = SafeNumber(bd._specCdDur, expectedDur)
-              cdStart, cdDur = cs, cd
+            if CooldownModule and CooldownModule.UpdateSpecialState then
+              local cs, cd = CooldownModule.UpdateSpecialState(
+                bd,
+                wowShown,
+                wowStart,
+                wowDur,
+                now,
+                specialCooldownExpected
+              )
+              cdStart, cdDur = SafeNumber(cs, 0), SafeNumber(cd, 0)
             else
-              -- Reset on false; wait for next true edge.
-              cdStart, cdDur = 0, 0
-              bd._specCdShown = false
-              bd._specCdStart, bd._specCdDur = nil, nil
+              local expectedDur = SafeNumber(specialCooldownExpected, 0)
+              if expectedDur <= 0 then
+                expectedDur = SafeNumber(bd._specCdFallbackDur, 0)
+              end
+              if wowShown then
+                local wasShown = (bd._specCdShown == true)
+                if not wasShown then
+                  bd._specCdShown = true
+                  bd._specCdStart = now
+                  local ws, wd = NormalizeCooldownPair(wowStart, wowDur)
+                  if ws > 0 and wd > 1.6 and wd < 120 then
+                    bd._specCdDur = wd
+                    bd._specCdFallbackDur = wd
+                  else
+                    bd._specCdDur = expectedDur
+                  end
+                end
+                local cs = SafeNumber(bd._specCdStart, now)
+                local cd = SafeNumber(bd._specCdDur, expectedDur)
+                cdStart, cdDur = cs, cd
+              else
+                cdStart, cdDur = 0, 0
+                bd._specCdShown = false
+                bd._specCdStart, bd._specCdDur = nil, nil
+              end
             end
             bestRemain = (cdStart > 0 and cdDur > 0) and math.max(0, (cdStart + cdDur) - now) or 0
           end
@@ -1942,8 +1941,13 @@ UpdateCooldowns = function()
 
         local specCdStart = SafeNumber(bd._specCdStart, 0)
         local specCdDur = SafeNumber(bd._specCdDur, 0)
-        local specCdRemain = (bd._specCdShown == true and specCdStart > 0 and specCdDur > 0)
-            and math.max(0, (specCdStart + specCdDur) - now) or 0
+        local specCdRemain = 0
+        if CooldownModule and CooldownModule.GetSpecialRemain then
+          specCdRemain = SafeNumber(CooldownModule.GetSpecialRemain(bd, now), 0)
+        else
+          specCdRemain = (bd._specCdShown == true and specCdStart > 0 and specCdDur > 0)
+              and math.max(0, (specCdStart + specCdDur) - now) or 0
+        end
         local specialTextMode = isSpecialCooldownBinding or (specCdRemain > 0)
 
         local safeCStart = SafeNumber(chargeStart, 0)
