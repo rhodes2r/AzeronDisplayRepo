@@ -4,4 +4,6 @@
 ## Notes: Visual overlay matching an Azeron keypad, shows current keybindings with modifier support (Ctrl/Shift/Alt). Colored dots show customized states.
 ## Version: 3.0.0
 ## Author: User
+00_Namespace.lua
+01_Constants.lua
 Core.lua

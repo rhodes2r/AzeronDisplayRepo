@@ -3,6 +3,8 @@
 -- Buttons mirror WoW action buttons: icons, cooldown spirals, usability, proc glow
 
 local ADDON_NAME = "AzeronDisplay"
+local NS = _G.AzeronDisplayNS or {}
+_G.AzeronDisplayNS = NS
 
 AzeronDisplayDB = AzeronDisplayDB or {}
 local DB
@@ -45,7 +47,7 @@ local PROC_BORDER_STYLES = {
   { value = 6, text = "Deep Blue", color = { 0.10, 0.45, 1.00 }, blend = "ADD", alphaMul = 1.25, sizeMul = 1.02 },
 }
 local PROC_BORDER_TEXTURE = "Interface\\Buttons\\UI-ActionButton-Border"
-local SPECIAL_COOLDOWN_SPELLS = {
+local SPECIAL_COOLDOWN_SPELLS = (NS.constants and NS.constants.SPECIAL_COOLDOWN_SPELLS) or {
   [22812] = 34.0, -- Barkskin
 }
 
@@ -3318,3 +3320,10 @@ SlashCmdList["AZERONDISPLAY"] = function(msg)
     print(ADDON_NAME .. ": Unknown command '" .. cmd .. "'. Try /azeron help")
   end
 end
+
+NS.api = NS.api or {}
+NS.api.UpdateBindings = UpdateBindings
+NS.api.UpdateCooldowns = UpdateCooldowns
+NS.api.UpdateUsability = UpdateUsability
+NS.api.ToggleEditMode = ToggleEditMode
+NS.api.OpenConfigFrame = OpenConfigFrame
