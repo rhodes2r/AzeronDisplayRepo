@@ -2652,8 +2652,8 @@ end)
 ---------------------------------------------------------------------------
 -- Slash commands
 ---------------------------------------------------------------------------
-SLASH_AZERONDISPLAY1 = "/azeron"
-SlashCmdList["AZERONDISPLAY"] = function(msg)
+NS.api = NS.api or {}
+NS.api.HandleSlashCommand = function(msg)
   local cmd, rest = "", ""
   if msg and msg:match("%S") then
     cmd, rest = msg:lower():match("^%s*(%S+)%s*(.-)%s*$")
