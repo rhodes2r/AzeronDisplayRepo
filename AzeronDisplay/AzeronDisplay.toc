@@ -1,0 +1,7 @@
+## Interface: 120001
+## SavedVariables: AzeronDisplayDB
+## Title: Azeron Keybind Display
+## Notes: Visual overlay matching an Azeron keypad, shows current keybindings with modifier support (Ctrl/Shift/Alt). Colored dots show customized states.
+## Version: 3.0.0
+## Author: User
+Core.lua

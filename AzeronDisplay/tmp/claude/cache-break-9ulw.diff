@@ -1,0 +1,25 @@
+Index: prompt-state
+===================================================================
+--- prompt-state	before
++++ prompt-state	after
+@@ -478,9 +478,8 @@
+ 
+ 
+ Usage notes:
+ - Always include a short description (3-5 words) summarizing what the agent will do
+-- Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses
+ - When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result.
+ - You can optionally run agents in the background using the run_in_background parameter. When an agent runs in the background, the tool result will include an output_file path. To check on the agent's progress or retrieve its results, use the Read tool to read the output file, or use Bash with `tail` to see recent output. You can continue working while background agents run.
+ - Agents can be resumed using the `resume` parameter by passing the agent ID from a previous invocation. When resumed, the agent continues with its full previous context preserved. When NOT resuming, each invocation starts fresh and you should provide a detailed task description with all necessary context.
+ - When the agent is done, it will return a single message back to you along with its agent ID. You can use this ID to resume the agent later if needed for follow-up work.
+@@ -781,9 +780,9 @@
+   - Domain filtering is supported to include or block specific websites
+   - Web search is only available in the US
+ 
+ IMPORTANT - Use the correct year in search queries:
+-  - Today's date is 2026-02-12. You MUST use this year when searching for recent information, documentation, or current events.
++  - Today's date is 2026-02-13. You MUST use this year when searching for recent information, documentation, or current events.
+   - Example: If the user asks for "latest React docs", search for "React documentation 2026", NOT "React documentation 2025"
+ 
+   input_schema: {"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"query":{"description":"The search query to use","type":"string","minLength":2},"allowed_domains":{"description":"Only include search results from these domains","type":"array","items":{"type":"string"}},"blocked_domains":{"description":"Never include search results from these domains","type":"array","items":{"type":"string"}}},"required":["query"],"additionalProperties":false}
+ 

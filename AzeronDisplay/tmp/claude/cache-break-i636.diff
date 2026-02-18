@@ -1,0 +1,15 @@
+Index: prompt-state
+===================================================================
+--- prompt-state	before
++++ prompt-state	after
+@@ -1,9 +1,9 @@
+ Model: claude-sonnet-4-5-20250929
+ 
+ === System Prompt ===
+ 
+-x-anthropic-billing-header: cc_version=2.1.39.087; cc_entrypoint=claude-vscode; cch=00000;
++x-anthropic-billing-header: cc_version=2.1.39.a2f; cc_entrypoint=claude-vscode; cch=00000;
+ 
+ You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.
+ 
+ 

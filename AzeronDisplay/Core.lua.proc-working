@@ -1,0 +1,936 @@
+-- Azeron Keybind Display - Core.lua
+-- Three independent sections: Main Grid, D-Pad, Numpad
+-- Buttons mirror WoW action buttons: icons, cooldown spirals, usability, proc glow
+
+local ADDON_NAME = "AzeronDisplay"
+
+AzeronDisplayDB = AzeronDisplayDB or {}
+local DB
+
+local editMode = false
+local buttons = {}
+local sectionFrames = {}
+
+-- Button size (fixed), spacing (configurable, default 1)
+local BTN_SIZE = 42
+local BTN_SPACING = 1
+local BTN_STEP = BTN_SIZE + BTN_SPACING -- 43
+
+-- Sections: cols/rows — pixel sizes computed at runtime from BTN_STEP
+local SECTIONS = {
+  main   = { label = "Main",   cols = 6, rows = 5 },
+  dpad   = { label = "D-Pad",  cols = 3, rows = 3 },
+  numpad = { label = "Mouse Side", cols = 3, rows = 4 },
+}
+local SECTION_ORDER = { "main", "dpad", "numpad" }
+
+-- Key layout: col/row relative to section frame (pixel pos computed from BTN_STEP)
+-- Main row 3 spans cols 0-5 (Tab..T), rows 1/2/4/5 use cols 1-4
+local keyLayout = {
+  -- Main row 1
+  { id = "Z",  col = 1, row = 0, section = "main" },
+  { id = "X",  col = 2, row = 0, section = "main" },
+  { id = "C",  col = 3, row = 0, section = "main" },
+  { id = "V",  col = 4, row = 0, section = "main" },
+  -- Main row 2
+  { id = "1",  col = 1, row = 1, section = "main" },
+  { id = "2",  col = 2, row = 1, section = "main" },
+  { id = "3",  col = 3, row = 1, section = "main" },
+  { id = "4",  col = 4, row = 1, section = "main" },
+  -- Main row 3 (full width: Tab + 4 + T)
+  { id = "TAB", col = 0, row = 2, section = "main" },
+  { id = "5",   col = 1, row = 2, section = "main" },
+  { id = "6",   col = 2, row = 2, section = "main" },
+  { id = "7",   col = 3, row = 2, section = "main" },
+  { id = "8",   col = 4, row = 2, section = "main" },
+  { id = "T",   col = 5, row = 2, section = "main" },
+  -- Main row 4
+  { id = "F1", col = 1, row = 3, section = "main" },
+  { id = "F2", col = 2, row = 3, section = "main" },
+  { id = "F3", col = 3, row = 3, section = "main" },
+  { id = "F4", col = 4, row = 3, section = "main" },
+  -- Main row 5 (blank — right-click to assign)
+  { id = "MAIN_B1", col = 1, row = 4, section = "main" },
+  { id = "MAIN_B2", col = 2, row = 4, section = "main" },
+  { id = "MAIN_B3", col = 3, row = 4, section = "main" },
+  { id = "MAIN_B4", col = 4, row = 4, section = "main" },
+
+  -- D-Pad (5-button cross)
+  { id = "UP",     col = 1, row = 0, section = "dpad" },
+  { id = "LEFT",   col = 0, row = 1, section = "dpad" },
+  { id = "DPAD_C", col = 1, row = 1, section = "dpad" },
+  { id = "RIGHT",  col = 2, row = 1, section = "dpad" },
+  { id = "DOWN",   col = 1, row = 2, section = "dpad" },
+
+  -- Numpad (3 cols x 4 rows — first 6 have default numpad keys, rest blank)
+  { id = "NUMPAD7", col = 0, row = 0, section = "numpad" },
+  { id = "NUMPAD8", col = 1, row = 0, section = "numpad" },
+  { id = "NUMPAD9", col = 2, row = 0, section = "numpad" },
+  { id = "NUMPAD4", col = 0, row = 1, section = "numpad" },
+  { id = "NUMPAD5", col = 1, row = 1, section = "numpad" },
+  { id = "NUMPAD6", col = 2, row = 1, section = "numpad" },
+  { id = "NP_07",   col = 0, row = 2, section = "numpad" },
+  { id = "NP_08",   col = 1, row = 2, section = "numpad" },
+  { id = "NP_09",   col = 2, row = 2, section = "numpad" },
+  { id = "NP_10",   col = 0, row = 3, section = "numpad" },
+  { id = "NP_11",   col = 1, row = 3, section = "numpad" },
+  { id = "NP_12",   col = 2, row = 3, section = "numpad" },
+}
+
+---------------------------------------------------------------------------
+-- Modifier state
+---------------------------------------------------------------------------
+local currentModifierState = "NONE"
+local MODIFIER_STATES = { "NONE", "CTRL", "SHIFT", "ALT", "CTRLSHIFT", "CTRLALT", "SHIFTALT", "CTRLSHIFTALT" }
+
+local function GetCurrentModifierState()
+  local c, s, a = IsControlKeyDown(), IsShiftKeyDown(), IsAltKeyDown()
+  if c and s and a then return "CTRLSHIFTALT"
+  elseif c and s then return "CTRLSHIFT"
+  elseif c and a then return "CTRLALT"
+  elseif s and a then return "SHIFTALT"
+  elseif c then return "CTRL"
+  elseif s then return "SHIFT"
+  elseif a then return "ALT"
+  else return "NONE" end
+end
+
+local function GetBaseKey(id)
+  return DB.keyMap[id] or id
+end
+
+local function GetDisplayKeyText(baseKey)
+  if not baseKey or baseKey == "" then return "" end
+  local t = tostring(baseKey):upper()
+  t = t:gsub("NUMPAD", "N")
+  t = t:gsub("BUTTON", "M")
+  t = t:gsub("MOUSEWHEELUP", "MWU")
+  t = t:gsub("MOUSEWHEELDOWN", "MWD")
+  return t
+end
+
+---------------------------------------------------------------------------
+-- Spell / action helpers (12.0 Midnight compatible)
+---------------------------------------------------------------------------
+local function GetSpellTextureByName(name)
+  if not name then return nil end
+  if C_Spell and C_Spell.GetSpellTexture then
+    return C_Spell.GetSpellTexture(name)
+  elseif GetSpellInfo then
+    local _, _, icon = GetSpellInfo(name)
+    return icon
+  end
+end
+
+local function GetSpellNameByID(spellID)
+  if not spellID then return nil end
+  if C_Spell and C_Spell.GetSpellName then
+    return C_Spell.GetSpellName(spellID)
+  elseif GetSpellInfo then
+    return (GetSpellInfo(spellID))
+  end
+end
+
+local function GetSpellIDByName(name)
+  if not name then return nil end
+  if C_Spell and C_Spell.GetSpellInfo then
+    local info = C_Spell.GetSpellInfo(name)
+    if info then return info.spellID end
+  end
+  return nil
+end
+
+local function GetRealActionSlot(num)
+  local f = _G["ActionButton" .. num]
+  if f then
+    return f.action or f:GetAttribute("action") or num
+  end
+  return num
+end
+
+local MULTIBAR_PREFIX = {
+  [1] = "MultiBarBottomLeftButton", [2] = "MultiBarBottomRightButton",
+  [3] = "MultiBarRightButton",     [4] = "MultiBarLeftButton",
+  [5] = "MultiBar5Button",         [6] = "MultiBar6Button",
+  [7] = "MultiBar7Button",         [8] = "MultiBar8Button",
+}
+local MULTIBAR_BASE = {
+  [1] = 60, [2] = 48, [3] = 24, [4] = 36,
+  [5] = 144, [6] = 156, [7] = 168, [8] = 180,
+}
+
+local function GetMultiBarActionSlot(bar, btn)
+  local prefix = MULTIBAR_PREFIX[bar]
+  if prefix then
+    local f = _G[prefix .. btn]
+    if f then
+      return f.action or f:GetAttribute("action") or (MULTIBAR_BASE[bar] and MULTIBAR_BASE[bar] + btn)
+    end
+  end
+  return MULTIBAR_BASE[bar] and MULTIBAR_BASE[bar] + btn
+end
+
+-- Resolve actual ability name + spellID from an action slot
+local function GetActionDisplayName(slot)
+  if not slot or not HasAction or not HasAction(slot) then return nil, nil end
+  local actionType, id = GetActionInfo(slot)
+  if actionType == "spell" then
+    return GetSpellNameByID(id) or ("Spell " .. tostring(id)), id
+  elseif actionType == "macro" then
+    local name = GetMacroInfo(id)
+    return name or "Macro", nil
+  elseif actionType == "item" then
+    if C_Item and C_Item.GetItemNameByID then
+      return C_Item.GetItemNameByID(id) or "Item", nil
+    end
+    return "Item", nil
+  end
+  return nil, nil
+end
+
+-- Check if a WoW action button frame has its proc glow showing
+local function IsWoWButtonGlowing(frame)
+  if not frame then return false end
+  -- 12.0 Midnight: AssistedCombatHighlightFrame
+  if frame.AssistedCombatHighlightFrame and frame.AssistedCombatHighlightFrame.IsShown and frame.AssistedCombatHighlightFrame:IsShown() then
+    return true
+  end
+  -- Fallback: SpellActivationAlert (older retail)
+  if frame.SpellActivationAlert and frame.SpellActivationAlert.IsShown and frame.SpellActivationAlert:IsShown() then
+    return true
+  end
+  return false
+end
+
+-- Returns: displayName, iconTex, actionSlot, spellName, wowBtnFrame
+local function GetBindingInfo(key, modifier)
+  local bindKey = key
+  if modifier and modifier ~= "NONE" then
+    bindKey = modifier .. "-" .. key
+  end
+  local binding = GetBindingAction(bindKey)
+  if not binding or binding == "" then return "Unbound", nil, nil, nil, nil end
+
+  -- SPELL
+  local sn = binding:match("^SPELL (.+)$")
+  if sn then
+    return sn, GetSpellTextureByName(sn), nil, sn, nil
+  end
+
+  -- MACRO
+  local mn = binding:match("^MACRO (.+)$")
+  if mn then
+    local _, icon = GetMacroInfo(mn)
+    return mn, icon, nil, nil, nil
+  end
+
+  -- ACTIONBUTTON
+  local an = binding:match("^ACTIONBUTTON(%d+)$")
+  if an then
+    local slot = GetRealActionSlot(tonumber(an))
+    local icon = HasAction(slot) and GetActionTexture(slot) or nil
+    local name = GetActionDisplayName(slot)
+    local wowFrame = _G["ActionButton" .. an]
+    return name or ("Action " .. an), icon, slot, nil, wowFrame
+  end
+
+  -- MULTIACTIONBAR
+  local bn, bt = binding:match("^MULTIACTIONBAR(%d+)BUTTON(%d+)$")
+  if bn and bt then
+    local slot = GetMultiBarActionSlot(tonumber(bn), tonumber(bt))
+    local prefix = MULTIBAR_PREFIX[tonumber(bn)]
+    local wowFrame = prefix and _G[prefix .. bt] or nil
+    if slot and HasAction and HasAction(slot) then
+      local name = GetActionDisplayName(slot)
+      return name or ("Bar" .. bn .. " #" .. bt), GetActionTexture(slot), slot, nil, wowFrame
+    end
+    return "Bar" .. bn .. " #" .. bt, nil, slot, nil, wowFrame
+  end
+
+  return binding, nil, nil, nil, nil
+end
+
+---------------------------------------------------------------------------
+-- Forward declarations
+---------------------------------------------------------------------------
+local UpdateBindings, UpdateCooldowns, UpdateUsability, OpenKeyEditor
+
+---------------------------------------------------------------------------
+-- Edit mode
+---------------------------------------------------------------------------
+local function ApplyEditModeVisuals()
+  for _, sKey in ipairs(SECTION_ORDER) do
+    local f = sectionFrames[sKey]
+    if f then
+      f.bg:SetColorTexture(0, 0, 0, editMode and 0.4 or 0)
+      if editMode then f.label:Show() else f.label:Hide() end
+      f:SetMovable(editMode)
+    end
+  end
+end
+
+local function ToggleEditMode()
+  editMode = not editMode
+  ApplyEditModeVisuals()
+  print(ADDON_NAME .. ": Edit mode " .. (editMode and "ON" or "OFF"))
+end
+
+---------------------------------------------------------------------------
+-- Section frame creation
+---------------------------------------------------------------------------
+local function CreateSectionFrame(sKey)
+  local def = SECTIONS[sKey]
+  local w = def.cols * BTN_STEP
+  local h = def.rows * BTN_STEP
+
+  local f = CreateFrame("Frame", ADDON_NAME .. "_" .. sKey, UIParent)
+  f:SetSize(w, h)
+  f:EnableMouse(true)
+  f:SetMovable(false)
+  f:SetClampedToScreen(true)
+  f:RegisterForDrag("LeftButton")
+  f:SetScript("OnDragStart", function(self)
+    if editMode then self:StartMoving() end
+  end)
+  f:SetScript("OnDragStop", function(self)
+    self:StopMovingOrSizing()
+    local p, _, rp, ox, oy = self:GetPoint(1)
+    DB.sectionPositions[sKey] = { point = p, relPoint = rp, x = ox, y = oy }
+  end)
+
+  -- Background (invisible by default, shown in edit mode)
+  f.bg = f:CreateTexture(nil, "BACKGROUND")
+  f.bg:SetAllPoints()
+  f.bg:SetColorTexture(0, 0, 0, 0)
+
+  -- Label (edit mode only, floats above frame)
+  f.label = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  f.label:SetPoint("BOTTOM", f, "TOP", 0, 2)
+  f.label:SetText(def.label)
+  f.label:SetTextColor(1, 0.82, 0, 1)
+  f.label:Hide()
+
+  -- Edit toggle button (floats above top-right)
+  f.editBtn = CreateFrame("Button", nil, f)
+  f.editBtn:SetSize(16, 16)
+  f.editBtn:SetPoint("BOTTOMLEFT", f, "TOPRIGHT", 2, 2)
+  f.editBtn:SetNormalTexture("Interface\\Buttons\\UI-Panel-CollapseButton-Up")
+  f.editBtn:SetHighlightTexture("Interface\\Buttons\\UI-Panel-MinimizeButton-Highlight")
+  f.editBtn:SetScript("OnClick", ToggleEditMode)
+
+  -- Position
+  local saved = DB.sectionPositions[sKey]
+  if saved then
+    f:SetPoint(saved.point or "CENTER", UIParent, saved.relPoint or "CENTER", saved.x or 0, saved.y or 0)
+  else
+    local defaults = { main = { -150, 0 }, dpad = { 150, 60 }, numpad = { 150, -80 } }
+    local d = defaults[sKey]
+    f:SetPoint("CENTER", UIParent, "CENTER", d[1], d[2])
+  end
+
+  -- Scale and visibility
+  local s = DB.settings[sKey]
+  f:SetScale(s and s.scale or 1.0)
+  if s and s.visible == false then f:Hide() end
+
+  sectionFrames[sKey] = f
+  return f
+end
+
+---------------------------------------------------------------------------
+-- Button creation — mirrors WoW action button appearance
+---------------------------------------------------------------------------
+local function CreateKeyButton(info, parent)
+  local btn = CreateFrame("Button", nil, parent)
+  btn:SetSize(BTN_SIZE, BTN_SIZE)
+  btn:SetPoint("TOPLEFT", parent, "TOPLEFT", info.col * BTN_STEP, -info.row * BTN_STEP)
+  btn.keyID = info.id
+  btn.info = info
+  btn:EnableMouse(true)
+
+  -- Slot background
+  btn.slotBg = btn:CreateTexture(nil, "BACKGROUND")
+  btn.slotBg:SetSize(BTN_SIZE + 2, BTN_SIZE + 2)
+  btn.slotBg:SetPoint("CENTER")
+  btn.slotBg:SetTexture("Interface\\Buttons\\UI-Quickslot2")
+
+  -- Icon
+  btn.icon = btn:CreateTexture(nil, "ARTWORK")
+  btn.icon:SetSize(BTN_SIZE - 4, BTN_SIZE - 4)
+  btn.icon:SetPoint("CENTER")
+  btn.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+
+  -- Cooldown spiral
+  btn.cooldown = CreateFrame("Cooldown", nil, btn, "CooldownFrameTemplate")
+  btn.cooldown:SetSize(BTN_SIZE - 4, BTN_SIZE - 4)
+  btn.cooldown:SetPoint("CENTER")
+  btn.cooldown:SetDrawEdge(true)
+  if btn.cooldown.SetHideCountdownNumbers then
+    btn.cooldown:SetHideCountdownNumbers(false)
+  end
+
+  -- Normal border (subtle, always present)
+  btn.borderArt = btn:CreateTexture(nil, "OVERLAY")
+  btn.borderArt:SetSize(BTN_SIZE + 4, BTN_SIZE + 4)
+  btn.borderArt:SetPoint("CENTER")
+  btn.borderArt:SetTexture("Interface\\Buttons\\UI-ActionButton-Border")
+  btn.borderArt:SetBlendMode("ADD")
+  btn.borderArt:SetAlpha(0.25)
+
+  -- Active action highlight (white/silver, for IsCurrentAction — stance, channel, toggle)
+  btn.activeBorder = btn:CreateTexture(nil, "OVERLAY", nil, 1)
+  btn.activeBorder:SetSize(BTN_SIZE + 6, BTN_SIZE + 6)
+  btn.activeBorder:SetPoint("CENTER")
+  btn.activeBorder:SetTexture("Interface\\Buttons\\UI-ActionButton-Border")
+  btn.activeBorder:SetBlendMode("ADD")
+  btn.activeBorder:SetVertexColor(1, 1, 1, 1)
+  btn.activeBorder:SetAlpha(0.6)
+  btn.activeBorder:Hide()
+
+  -- Proc/rotation recommendation glow (golden, for AssistedCombatHighlightFrame)
+  btn.procBorder = btn:CreateTexture(nil, "OVERLAY", nil, 2)
+  btn.procBorder:SetSize(BTN_SIZE + 6, BTN_SIZE + 6)
+  btn.procBorder:SetPoint("CENTER")
+  btn.procBorder:SetTexture("Interface\\Buttons\\UI-ActionButton-Border")
+  btn.procBorder:SetBlendMode("ADD")
+  btn.procBorder:SetVertexColor(1, 0.85, 0, 1)
+  btn.procBorder:SetAlpha(0.9)
+  btn.procBorder:Hide()
+
+  -- Compact key label (top-right corner, inside button)
+  btn.keyLabel = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  btn.keyLabel:SetPoint("TOPRIGHT", btn, "TOPRIGHT", -3, -2)
+  btn.keyLabel:SetWidth(BTN_SIZE - 4)
+  btn.keyLabel:SetJustifyH("RIGHT")
+  btn.keyLabel:SetTextColor(1, 1, 1, 0.9)
+  btn.keyLabel:SetWordWrap(false)
+
+  -- Right-click opens key editor (no tooltip on hover)
+  btn:RegisterForClicks("RightButtonUp")
+  btn:SetScript("OnClick", function(self, button)
+    if button == "RightButton" then OpenKeyEditor(self.keyID) end
+  end)
+
+  btn.bindings = {}
+  return btn
+end
+
+---------------------------------------------------------------------------
+-- Key Editor (right-click popup)
+---------------------------------------------------------------------------
+local editor, editorTitle, editorKeyInput
+local editorPreviewRows = {}
+local currentEditButtonID = nil
+
+local function CreateEditorFrame()
+  if editor then return editor end
+
+  editor = CreateFrame("Frame", ADDON_NAME .. "Editor", UIParent)
+  editor:SetSize(400, 340)
+  editor:SetPoint("CENTER")
+  editor:SetMovable(true)
+  editor:EnableMouse(true)
+  editor:SetClampedToScreen(true)
+  editor:SetToplevel(true)
+  editor:SetFrameStrata("HIGH")
+  editor:SetFrameLevel(100)
+  editor:RegisterForDrag("LeftButton")
+  editor:SetScript("OnDragStart", function(self) self:StartMoving() end)
+  editor:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+
+  local border = editor:CreateTexture(nil, "BORDER")
+  border:SetAllPoints()
+  border:SetColorTexture(0.3, 0.3, 0.3, 1)
+
+  local bg = editor:CreateTexture(nil, "BACKGROUND")
+  bg:SetPoint("TOPLEFT", 2, -2)
+  bg:SetPoint("BOTTOMRIGHT", -2, 2)
+  bg:SetColorTexture(0.05, 0.05, 0.05, 0.95)
+
+  editorTitle = editor:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+  editorTitle:SetPoint("TOP", 0, -15)
+  editorTitle:SetTextColor(1, 1, 1, 1)
+
+  local btnClose = CreateFrame("Button", nil, editor, "UIPanelCloseButton")
+  btnClose:SetPoint("TOPRIGHT", -10, -10)
+  btnClose:SetScript("OnClick", function() editor:Hide() end)
+
+  local inst = editor:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  inst:SetPoint("TOP", editorTitle, "BOTTOM", 0, -10)
+  inst:SetText("Enter the WoW key name for this button:")
+  inst:SetTextColor(0.8, 0.8, 0.8, 1)
+
+  editorKeyInput = CreateFrame("EditBox", nil, editor, "InputBoxTemplate")
+  editorKeyInput:SetSize(200, 30)
+  editorKeyInput:SetPoint("TOP", inst, "BOTTOM", 0, -8)
+  editorKeyInput:SetAutoFocus(false)
+  editorKeyInput:SetMaxLetters(30)
+
+  local examples = editor:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  examples:SetPoint("TOP", editorKeyInput, "BOTTOM", 0, -4)
+  examples:SetText("Examples: 1, F2, Z, NUMPAD5, TAB, UP")
+  examples:SetTextColor(0.6, 0.6, 0.6, 1)
+
+  local header = editor:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  header:SetPoint("TOP", examples, "BOTTOM", 0, -14)
+  header:SetText("Keybind Preview:")
+  header:SetTextColor(1, 1, 0.5, 1)
+
+  local modifiers = {
+    { key = "NONE",  label = "Default", color = { 0.5, 0.5, 1.0 } },
+    { key = "CTRL",  label = "CTRL",    color = { 1.0, 0.5, 0.5 } },
+    { key = "SHIFT", label = "SHIFT",   color = { 0.5, 1.0, 0.5 } },
+    { key = "ALT",   label = "ALT",     color = { 1.0, 1.0, 0.5 } },
+  }
+
+  for i, modInfo in ipairs(modifiers) do
+    local row = CreateFrame("Frame", nil, editor)
+    row:SetSize(360, 36)
+    row:SetPoint("TOP", header, "BOTTOM", 0, -4 - ((i - 1) * 38))
+
+    local rowBg = row:CreateTexture(nil, "BACKGROUND")
+    rowBg:SetAllPoints()
+    rowBg:SetColorTexture(0.1, 0.1, 0.1, 0.5)
+
+    row.icon = row:CreateTexture(nil, "ARTWORK")
+    row.icon:SetSize(32, 32)
+    row.icon:SetPoint("LEFT", 4, 0)
+    row.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+
+    row.modLabel = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    row.modLabel:SetPoint("LEFT", row.icon, "RIGHT", 8, 0)
+    row.modLabel:SetText(modInfo.label)
+    row.modLabel:SetTextColor(modInfo.color[1], modInfo.color[2], modInfo.color[3], 1)
+    row.modLabel:SetWidth(60)
+    row.modLabel:SetJustifyH("LEFT")
+
+    row.bindLabel = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    row.bindLabel:SetPoint("LEFT", row.modLabel, "RIGHT", 8, 0)
+    row.bindLabel:SetPoint("RIGHT", row, "RIGHT", -4, 0)
+    row.bindLabel:SetJustifyH("LEFT")
+    row.bindLabel:SetTextColor(0.7, 0.7, 0.7, 1)
+
+    row.modifierKey = modInfo.key
+    editorPreviewRows[i] = row
+  end
+
+  local function RefreshPreview(key)
+    for _, row in ipairs(editorPreviewRows) do
+      local mod = row.modifierKey == "NONE" and nil or row.modifierKey
+      local dn, iconTex = GetBindingInfo(key, mod)
+      row.icon:SetTexture(iconTex)
+      row.bindLabel:SetText(dn or "—")
+    end
+  end
+
+  editorKeyInput:SetScript("OnTextChanged", function(self, userInput)
+    if userInput then RefreshPreview(self:GetText():upper()) end
+  end)
+
+  local btnSave = CreateFrame("Button", nil, editor, "UIPanelButtonTemplate")
+  btnSave:SetSize(100, 28)
+  btnSave:SetPoint("BOTTOMRIGHT", -12, 12)
+  btnSave:SetText("Save")
+  btnSave:SetScript("OnClick", function()
+    if not currentEditButtonID then return end
+    local newKey = editorKeyInput:GetText():upper()
+    if newKey == "" then return end
+    DB.keyMap[currentEditButtonID] = newKey
+    currentModifierState = nil
+    UpdateBindings()
+    editor:Hide()
+    print(ADDON_NAME .. ": '" .. currentEditButtonID .. "' -> key '" .. newKey .. "'")
+  end)
+
+  local btnDefault = CreateFrame("Button", nil, editor, "UIPanelButtonTemplate")
+  btnDefault:SetSize(120, 28)
+  btnDefault:SetPoint("RIGHT", btnSave, "LEFT", -8, 0)
+  btnDefault:SetText("Reset Default")
+  btnDefault:SetScript("OnClick", function()
+    if not currentEditButtonID then return end
+    DB.keyMap[currentEditButtonID] = nil
+    currentModifierState = nil
+    UpdateBindings()
+    editor:Hide()
+    print(ADDON_NAME .. ": '" .. currentEditButtonID .. "' reset to default")
+  end)
+
+  local btnCancel = CreateFrame("Button", nil, editor, "UIPanelButtonTemplate")
+  btnCancel:SetSize(80, 28)
+  btnCancel:SetPoint("RIGHT", btnDefault, "LEFT", -8, 0)
+  btnCancel:SetText("Cancel")
+  btnCancel:SetScript("OnClick", function() editor:Hide() end)
+
+  editor.RefreshPreview = RefreshPreview
+  return editor
+end
+
+OpenKeyEditor = function(buttonID)
+  if not editor then CreateEditorFrame() end
+  currentEditButtonID = buttonID
+  local key = GetBaseKey(buttonID)
+  editorTitle:SetText("Set Base Key: " .. buttonID)
+  editorKeyInput:SetText(key)
+  editor.RefreshPreview(key)
+  editor:ClearAllPoints()
+  editor:SetPoint("CENTER")
+  editor:Show()
+  editor:Raise()
+end
+
+---------------------------------------------------------------------------
+-- Update: refresh all button bindings for all modifier states
+---------------------------------------------------------------------------
+UpdateBindings = function()
+  for i, info in ipairs(keyLayout) do
+    local sFrame = sectionFrames[info.section]
+    if not sFrame then return end
+
+    local btn = buttons[i]
+    if not btn then
+      btn = CreateKeyButton(info, sFrame)
+      buttons[i] = btn
+    end
+
+    local baseKey = GetBaseKey(info.id)
+    btn.bindings = {}
+    for _, mod in ipairs(MODIFIER_STATES) do
+      local m = mod == "NONE" and nil or mod
+      local dn, icon, slot, sn, wowFrame = GetBindingInfo(baseKey, m)
+      btn.bindings[mod] = { name = dn, icon = icon, actionSlot = slot, spellName = sn, wowFrame = wowFrame }
+    end
+
+    -- Show current modifier's icon and compact key label
+    local ms = currentModifierState or "NONE"
+    local bd = btn.bindings[ms]
+    btn.icon:SetTexture(bd and bd.icon or nil)
+    local keyText = GetDisplayKeyText(baseKey)
+    if bd and bd.name and bd.name ~= "Unbound" and bd.icon and keyText ~= "" then
+      btn.keyLabel:SetText(keyText)
+    else
+      btn.keyLabel:SetText("")
+    end
+  end
+  UpdateCooldowns()
+  UpdateUsability()
+end
+
+---------------------------------------------------------------------------
+-- Update: cooldown spirals
+---------------------------------------------------------------------------
+UpdateCooldowns = function()
+  local ms = currentModifierState or "NONE"
+  for _, btn in ipairs(buttons) do
+    if btn and btn.cooldown and btn.bindings then
+      local bd = btn.bindings[ms]
+      if bd then
+        local cdStart, cdDur = 0, 0
+        if bd.actionSlot and HasAction and HasAction(bd.actionSlot) then
+          local ok, s, d = pcall(GetActionCooldown, bd.actionSlot)
+          if ok then cdStart, cdDur = s or 0, d or 0 end
+        elseif bd.spellName then
+          if C_Spell and C_Spell.GetSpellCooldown then
+            local ok, info = pcall(C_Spell.GetSpellCooldown, bd.spellName)
+            if ok and info then
+              cdStart = info.startTime or 0
+              cdDur = info.duration or 0
+            end
+          elseif GetSpellCooldown then
+            local ok, s, d = pcall(GetSpellCooldown, bd.spellName)
+            if ok then cdStart, cdDur = s or 0, d or 0 end
+          end
+        end
+        local safeStart = tonumber(tostring(cdStart)) or 0
+        local safeDur = tonumber(tostring(cdDur)) or 0
+        if safeStart > 0 and safeDur > 0 then
+          btn.cooldown:SetCooldown(safeStart, safeDur)
+        else
+          btn.cooldown:Clear()
+        end
+      else
+        btn.cooldown:Clear()
+      end
+    end
+  end
+end
+
+---------------------------------------------------------------------------
+-- Update: usability coloring, range, active highlight, proc glow
+---------------------------------------------------------------------------
+UpdateUsability = function()
+  local ms = currentModifierState or "NONE"
+  for _, btn in ipairs(buttons) do
+    if btn and btn.bindings then
+      local bd = btn.bindings[ms]
+      local showActive = false
+      local showProc = false
+
+      if bd and bd.actionSlot and HasAction and HasAction(bd.actionSlot) then
+        local slot = bd.actionSlot
+        -- Usability coloring
+        local usable, noMana = IsUsableAction(slot)
+        local inRange = IsActionInRange(slot)
+        if inRange == false then
+          btn.icon:SetVertexColor(1, 0.1, 0.1)
+        elseif not usable then
+          btn.icon:SetVertexColor(0.4, 0.4, 0.4)
+        elseif noMana then
+          btn.icon:SetVertexColor(0.2, 0.2, 1)
+        else
+          btn.icon:SetVertexColor(1, 1, 1)
+        end
+        -- Active action (stance, channel, toggle)
+        if IsCurrentAction and IsCurrentAction(slot) then
+          showActive = true
+        end
+      else
+        btn.icon:SetVertexColor(1, 1, 1)
+      end
+
+      -- Proc / rotation recommendation: poll WoW action button frame
+      if bd and bd.wowFrame and IsWoWButtonGlowing(bd.wowFrame) then
+        showProc = true
+      end
+
+      -- Active action highlight (white)
+      if showActive then btn.activeBorder:Show() else btn.activeBorder:Hide() end
+      -- Proc recommendation glow (golden)
+      if showProc then btn.procBorder:Show() else btn.procBorder:Hide() end
+    end
+  end
+end
+
+---------------------------------------------------------------------------
+-- Position / Scale helpers
+---------------------------------------------------------------------------
+local function ResetPositions()
+  DB.sectionPositions = {}
+  for key, f in pairs(sectionFrames) do
+    f:ClearAllPoints()
+    local defaults = { main = { -150, 0 }, dpad = { 150, 60 }, numpad = { 150, -80 } }
+    local d = defaults[key]
+    f:SetPoint("CENTER", UIParent, "CENTER", d[1], d[2])
+  end
+  print(ADDON_NAME .. ": Positions reset")
+end
+
+local function SetSectionScale(sKey, s)
+  s = tonumber(s) or 1.0
+  if not SECTIONS[sKey] then
+    print(ADDON_NAME .. ": Unknown section '" .. sKey .. "'. Use: main, dpad, numpad")
+    return
+  end
+  DB.settings[sKey].scale = s
+  if sectionFrames[sKey] then sectionFrames[sKey]:SetScale(s) end
+  print(ADDON_NAME .. ": " .. sKey .. " scale = " .. tostring(s))
+end
+
+local function SetAllScales(s)
+  for key in pairs(SECTIONS) do SetSectionScale(key, s) end
+end
+
+---------------------------------------------------------------------------
+-- Event / update anchor
+---------------------------------------------------------------------------
+local anchor = CreateFrame("Frame", ADDON_NAME .. "Anchor", UIParent)
+anchor:SetSize(1, 1)
+anchor:SetPoint("CENTER")
+anchor:RegisterEvent("PLAYER_LOGIN")
+anchor:RegisterEvent("UPDATE_BINDINGS")
+anchor:RegisterEvent("ACTIONBAR_UPDATE_COOLDOWN")
+anchor:RegisterEvent("SPELL_UPDATE_COOLDOWN")
+anchor:RegisterEvent("ACTIONBAR_UPDATE_USABLE")
+anchor:RegisterEvent("ACTIONBAR_UPDATE_STATE")
+anchor:SetScript("OnEvent", function(self, event)
+  if event == "PLAYER_LOGIN" then
+    AzeronDisplayDB = AzeronDisplayDB or {}
+    DB = AzeronDisplayDB
+    DB.keyMap = DB.keyMap or {}
+    DB.sectionPositions = DB.sectionPositions or {}
+    DB.settings = DB.settings or {}
+    DB.settings.main   = DB.settings.main   or { scale = 1.0, visible = true }
+    DB.settings.dpad   = DB.settings.dpad   or { scale = 1.0, visible = true }
+    DB.settings.numpad = DB.settings.numpad or { scale = 1.0, visible = true }
+    DB.positions = nil -- wipe old per-button positions
+
+    -- Apply saved padding (default 1)
+    if DB.settings.padding then
+      BTN_SPACING = DB.settings.padding
+      BTN_STEP = BTN_SIZE + BTN_SPACING
+    end
+
+    for _, sKey in ipairs(SECTION_ORDER) do
+      CreateSectionFrame(sKey)
+    end
+
+    UpdateBindings()
+    ApplyEditModeVisuals()
+
+    -- Auto-refresh ticker (full binding re-resolve every 2s)
+    C_Timer.NewTicker(2, function()
+      for _, f in pairs(sectionFrames) do
+        if f:IsShown() then
+          UpdateBindings()
+          return
+        end
+      end
+    end)
+  elseif event == "UPDATE_BINDINGS" then
+    UpdateBindings()
+  elseif event == "ACTIONBAR_UPDATE_COOLDOWN" or event == "SPELL_UPDATE_COOLDOWN" then
+    UpdateCooldowns()
+  elseif event == "ACTIONBAR_UPDATE_USABLE" or event == "ACTIONBAR_UPDATE_STATE" then
+    UpdateUsability()
+  end
+end)
+
+-- Fast OnUpdate: modifier detection + usability/range (throttled to ~20fps)
+local updateAccum = 0
+anchor:SetScript("OnUpdate", function(self, elapsed)
+  updateAccum = updateAccum + elapsed
+  if updateAccum < 0.05 then return end
+  updateAccum = 0
+
+  local newMod = GetCurrentModifierState()
+  if newMod ~= currentModifierState then
+    currentModifierState = newMod
+    for _, btn in ipairs(buttons) do
+      if btn and btn.bindings then
+        local bd = btn.bindings[newMod]
+        btn.icon:SetTexture(bd and bd.icon or nil)
+        local keyText = GetDisplayKeyText(GetBaseKey(btn.keyID))
+        if bd and bd.name and bd.name ~= "Unbound" and bd.icon and keyText ~= "" then
+          btn.keyLabel:SetText(keyText)
+        else
+          btn.keyLabel:SetText("")
+        end
+      end
+    end
+    UpdateCooldowns()
+  end
+  UpdateUsability()
+end)
+
+---------------------------------------------------------------------------
+-- Slash commands
+---------------------------------------------------------------------------
+SLASH_AZERONDISPLAY1 = "/azeron"
+SlashCmdList["AZERONDISPLAY"] = function(msg)
+  local cmd, rest = "", ""
+  if msg and msg:match("%S") then
+    cmd, rest = msg:lower():match("^%s*(%S+)%s*(.-)%s*$")
+    cmd = cmd or ""
+    rest = rest or ""
+  end
+
+  if cmd == "help" then
+    print(ADDON_NAME .. " Commands:")
+    print("  /azeron — Toggle all sections")
+    print("  /azeron show <section> — Show section (main/dpad/numpad)")
+    print("  /azeron hide <section> — Hide section")
+    print("  /azeron edit — Toggle edit mode (drag sections)")
+    print("  /azeron reset — Reset section positions")
+    print("  /azeron scale <section> <number> — Set section scale")
+    print("  /azeron scale <number> — Set all scales")
+    print("  /azeron padding <number> — Set button spacing (requires /reload)")
+    print("  /azeron resetkeys — Reset all base key mappings")
+    print("  /azeron getbindicon <key> — Debug binding info")
+    print("  /azeron procdebug — Show active rotation recommendations")
+    print("  Right-click any button to change its base key.")
+
+  elseif cmd == "edit" then
+    ToggleEditMode()
+
+  elseif cmd == "reset" then
+    ResetPositions()
+
+  elseif cmd == "scale" then
+    local parts = {}
+    for w in rest:gmatch("%S+") do parts[#parts + 1] = w end
+    if #parts == 2 then
+      SetSectionScale(parts[1], tonumber(parts[2]))
+    elseif #parts == 1 then
+      local val = tonumber(parts[1])
+      if val then SetAllScales(val) else print("Usage: /azeron scale [section] <number>") end
+    else
+      print("Usage: /azeron scale [section] <number>")
+    end
+
+  elseif cmd == "padding" then
+    local val = tonumber(rest)
+    if val and val >= 0 then
+      DB.settings.padding = val
+      print(ADDON_NAME .. ": Padding set to " .. val .. "px. /reload to apply.")
+    else
+      print("Usage: /azeron padding <number>  (current: " .. BTN_SPACING .. ")")
+    end
+
+  elseif cmd == "show" then
+    local sec = rest:lower()
+    if sectionFrames[sec] then
+      sectionFrames[sec]:Show()
+      DB.settings[sec].visible = true
+      print(ADDON_NAME .. ": " .. sec .. " shown")
+    else print("Usage: /azeron show main|dpad|numpad") end
+
+  elseif cmd == "hide" then
+    local sec = rest:lower()
+    if sectionFrames[sec] then
+      sectionFrames[sec]:Hide()
+      DB.settings[sec].visible = false
+      print(ADDON_NAME .. ": " .. sec .. " hidden")
+    else print("Usage: /azeron hide main|dpad|numpad") end
+
+  elseif cmd == "resetkeys" then
+    wipe(DB.keyMap)
+    currentModifierState = nil
+    UpdateBindings()
+    print(ADDON_NAME .. ": All base key mappings reset")
+
+  elseif cmd == "getbindicon" then
+    if not rest or rest == "" then
+      print("Usage: /azeron getbindicon <key>")
+      return
+    end
+    local key = rest:upper():gsub("%+", "-"):gsub("%s+", "-")
+    local dn, icon, slot, sn, wowFrame = GetBindingInfo(key, nil)
+    local frameName = wowFrame and wowFrame:GetName() or "none"
+    print(ADDON_NAME .. ": " .. key .. " -> " .. tostring(dn) .. " | icon=" .. tostring(icon) .. " | slot=" .. tostring(slot) .. " | frame=" .. frameName)
+
+  elseif cmd == "procdebug" then
+    -- Scan our Azeron buttons for active proc glow (AssistedCombatHighlightFrame)
+    local ms = currentModifierState or "NONE"
+    local found = false
+    for _, btn in ipairs(buttons) do
+      if btn and btn.bindings then
+        local bd = btn.bindings[ms]
+        if bd and bd.wowFrame and IsWoWButtonGlowing(bd.wowFrame) then
+          local frameName = bd.wowFrame:GetName() or "?"
+          print(ADDON_NAME .. ": PROC on [" .. btn.keyID .. "] " .. tostring(bd.name) .. " frame=" .. frameName .. " slot=" .. tostring(bd.actionSlot))
+          found = true
+        end
+      end
+    end
+    if not found then
+      print(ADDON_NAME .. ": No active proc detected.")
+    end
+
+  elseif cmd == "" then
+    local anyVisible = false
+    for _, f in pairs(sectionFrames) do
+      if f:IsShown() then anyVisible = true; break end
+    end
+    for key, f in pairs(sectionFrames) do
+      if anyVisible then
+        f:Hide()
+      else
+        f:Show()
+        DB.settings[key].visible = true
+      end
+    end
+    print(ADDON_NAME .. (anyVisible and ": hidden" or ": shown"))
+
+  else
+    print(ADDON_NAME .. ": Unknown command '" .. cmd .. "'. Try /azeron help")
+  end
+end
