@@ -53,6 +53,7 @@ local SPECIAL_COOLDOWN_SPELLS = (NS.constants and NS.constants.SPECIAL_COOLDOWN_
 local CooldownModule = NS.modules and NS.modules.Cooldowns or nil
 local BindingsModule = NS.modules and NS.modules.Bindings or nil
 local IndicatorsModule = NS.modules and NS.modules.Indicators or nil
+local ConfigModule = NS.modules and NS.modules.Config or nil
 
 local function ClampNumber(v, minV, maxV, fallback)
   local n = tonumber(v)
@@ -2300,6 +2301,9 @@ local configRegisteredLegacy
 local configWidgets = {}
 
 local function CreateConfigSlider(parent, label, minVal, maxVal, step, fmt, getValue, setValue, yOffset)
+  if ConfigModule and ConfigModule.CreateConfigSlider then
+    return ConfigModule.CreateConfigSlider(parent, label, minVal, maxVal, step, fmt, getValue, setValue, yOffset)
+  end
   local container = CreateFrame("Frame", nil, parent)
   container:SetSize(340, 40)
   container:SetPoint("TOPLEFT", parent, "TOPLEFT", 20, yOffset)
@@ -2339,6 +2343,9 @@ local function CreateConfigSlider(parent, label, minVal, maxVal, step, fmt, getV
 end
 
 local function CreateConfigCheckbox(parent, label, getValue, setValue, x, y)
+  if ConfigModule and ConfigModule.CreateConfigCheckbox then
+    return ConfigModule.CreateConfigCheckbox(parent, label, getValue, setValue, x, y)
+  end
   local cb = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
   cb:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
   local text = cb:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -2354,6 +2361,9 @@ local function CreateConfigCheckbox(parent, label, getValue, setValue, x, y)
 end
 
 local function CreateConfigDropdown(parent, label, options, getValue, setValue, yOffset)
+  if ConfigModule and ConfigModule.CreateConfigDropdown then
+    return ConfigModule.CreateConfigDropdown(parent, label, options, getValue, setValue, yOffset)
+  end
   local container = CreateFrame("Frame", nil, parent)
   container:SetSize(340, 56)
   container:SetPoint("TOPLEFT", parent, "TOPLEFT", 20, yOffset)

@@ -9,5 +9,6 @@
 20_Cooldowns.lua
 30_Bindings.lua
 40_Indicators.lua
+50_Config.lua
 Core.lua
 90_Debug.lua
