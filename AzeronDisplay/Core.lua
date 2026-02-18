@@ -55,6 +55,7 @@ local BindingsModule = NS.modules and NS.modules.Bindings or nil
 local IndicatorsModule = NS.modules and NS.modules.Indicators or nil
 local ConfigModule = NS.modules and NS.modules.Config or nil
 local RuntimeModule = NS.modules and NS.modules.Runtime or nil
+local EventsModule = NS.modules and NS.modules.Events or nil
 
 local function ClampNumber(v, minV, maxV, fallback)
   local n = tonumber(v)
@@ -2640,6 +2641,15 @@ anchor:SetScript("OnEvent", function(self, event)
         end
       end
     end)
+  elseif EventsModule and EventsModule.HandleEvent and EventsModule.HandleEvent({
+      UpdateBindings = UpdateBindings,
+      UpdateCooldowns = UpdateCooldowns,
+      UpdateUsability = UpdateUsability,
+      InCombatLockdown = InCombatLockdown,
+      GetPendingBindingRefresh = function() return pendingBindingRefresh end,
+      SetPendingBindingRefresh = function(v) pendingBindingRefresh = v and true or false end,
+    }, event) then
+    -- handled by module
   elseif event == "UPDATE_BINDINGS" then
     UpdateBindings()
   elseif event == "ACTIONBAR_UPDATE_COOLDOWN" or event == "SPELL_UPDATE_COOLDOWN" or event == "SPELL_UPDATE_CHARGES" then
