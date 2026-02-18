@@ -662,81 +662,15 @@ if BindingsModule and BindingsModule.Init then
 end
 
 local function GetFrameHotKeyText(frame)
-  if BindingsModule and BindingsModule.GetFrameHotKeyText then
-    return BindingsModule.GetFrameHotKeyText(frame)
-  end
-  if not frame then return nil end
-  if frame.HotKey and frame.HotKey.GetText then
-    return frame.HotKey:GetText()
-  end
-  if frame.GetName then
-    local hk = _G[(frame:GetName() or "") .. "HotKey"]
-    if hk and hk.GetText then
-      return hk:GetText()
-    end
-  end
-  return nil
+  return BindingsModule.GetFrameHotKeyText(frame)
 end
 
 local function FindActionButtonByKeyLabel(key)
-  if BindingsModule and BindingsModule.FindActionButtonByKeyLabel then
-    return BindingsModule.FindActionButtonByKeyLabel(key)
-  end
-  local want = NormalizeKeyToken(key)
-  if not want then return nil, nil, nil end
-  for i = 1, 12 do
-    local f = _G["ActionButton" .. i]
-    if f then
-      local hk = NormalizeKeyToken(GetFrameHotKeyText(f))
-      if hk and hk == want then
-        local slot = f.action or (f.GetAttribute and f:GetAttribute("action")) or GetRealActionSlot(i)
-        slot = SafeNumber(slot, nil)
-        -- Only treat Action Bar 1 as canonical when this button actually has an action.
-        if slot and HasAction and HasAction(slot) then
-          return f, slot, i
-        end
-      end
-    end
-  end
-  return nil, nil, nil
+  return BindingsModule.FindActionButtonByKeyLabel(key)
 end
 
 local function ResolveWoWBindingFrameAndSlot(bindKey)
-  if BindingsModule and BindingsModule.ResolveWoWBindingFrameAndSlot then
-    return BindingsModule.ResolveWoWBindingFrameAndSlot(bindKey)
-  end
-  if not bindKey or bindKey == "" then return nil, nil, nil, nil, nil end
-  local abFrame, abSlot, abButton = FindActionButtonByKeyLabel(bindKey)
-  if abFrame and abSlot then
-    local rawAB = GetBindingAction and GetBindingAction(bindKey) or ("ACTIONBUTTON" .. tostring(abButton))
-    return rawAB, abFrame, abSlot, 1, abButton
-  end
-  local raw = GetBindingAction and GetBindingAction(bindKey) or nil
-  if not raw or raw == "" then return nil, nil, nil, nil, nil end
-
-  local an = raw:match("^ACTIONBUTTON(%d+)$")
-  if an then
-    local btnNum = tonumber(an)
-    local frame = _G["ActionButton" .. tostring(btnNum)]
-    local slot = frame and (frame.action or (frame.GetAttribute and frame:GetAttribute("action"))) or GetRealActionSlot(btnNum)
-    return raw, frame, SafeNumber(slot, nil), 1, btnNum
-  end
-
-  local bn, bt = raw:match("^MULTIACTIONBAR(%d+)BUTTON(%d+)$")
-  if bn and bt then
-    local abFrame, abSlot, abButton = FindActionButtonByKeyLabel(bindKey)
-    if abFrame and abSlot then
-      -- Canonicalize to Action Bar 1 when key label is visibly present there.
-      return raw, abFrame, abSlot, 1, abButton
-    end
-    local barNum, btnNum = tonumber(bn), tonumber(bt)
-    local prefix = MULTIBAR_PREFIX[barNum]
-    local frame = prefix and _G[prefix .. tostring(btnNum)] or nil
-    local slot = frame and (frame.action or (frame.GetAttribute and frame:GetAttribute("action"))) or GetMultiBarActionSlot(barNum, btnNum)
-    return raw, frame, SafeNumber(slot, nil), barNum, btnNum
-  end
-
-  return raw, nil, nil, nil, nil
+  return BindingsModule.ResolveWoWBindingFrameAndSlot(bindKey)
 end
 
 local function CollectGlowingWoWSources()
@@ -919,63 +853,7 @@ end
 
 -- Returns: displayName, iconTex, actionSlot, spellName, wowBtnFrame
 local function GetBindingInfo(key, modifier)
-  if BindingsModule and BindingsModule.GetBindingInfo then
-    return BindingsModule.GetBindingInfo(key, modifier)
-  end
-  local bindKey = key
-  if modifier and modifier ~= "NONE" then
-    bindKey = modifier .. "-" .. key
-  end
-  local abFrame, abSlot, abButton = FindActionButtonByKeyLabel(bindKey)
-  if abFrame and abSlot then
-    local name = GetActionDisplayName(abSlot)
-    return name or ("Action " .. tostring(abButton)), GetActionTexture(abSlot), abSlot, nil, abFrame
-  end
-  local binding = GetBindingAction(bindKey)
-  if not binding or binding == "" then return "Unbound", nil, nil, nil, nil end
-
-  -- SPELL
-  local sn = binding:match("^SPELL (.+)$")
-  if sn then
-    return sn, GetSpellTextureByName(sn), nil, sn, nil
-  end
-
-  -- MACRO
-  local mn = binding:match("^MACRO (.+)$")
-  if mn then
-    local _, icon = GetMacroInfo(mn)
-    return mn, icon, nil, nil, nil
-  end
-
-  -- ACTIONBUTTON
-  local an = binding:match("^ACTIONBUTTON(%d+)$")
-  if an then
-    local slot = GetRealActionSlot(tonumber(an))
-    local icon = HasAction(slot) and GetActionTexture(slot) or nil
-    local name = GetActionDisplayName(slot)
-    local wowFrame = _G["ActionButton" .. an]
-    return name or ("Action " .. an), icon, slot, nil, wowFrame
-  end
-
-  -- MULTIACTIONBAR
-  local bn, bt = binding:match("^MULTIACTIONBAR(%d+)BUTTON(%d+)$")
-  if bn and bt then
-    local abFrame, abSlot, abButton = FindActionButtonByKeyLabel(key)
-    if abFrame and abSlot then
-      local name = GetActionDisplayName(abSlot)
-      return name or ("Action " .. tostring(abButton)), GetActionTexture(abSlot), abSlot, nil, abFrame
-    end
-    local slot = GetMultiBarActionSlot(tonumber(bn), tonumber(bt))
-    local prefix = MULTIBAR_PREFIX[tonumber(bn)]
-    local wowFrame = prefix and _G[prefix .. bt] or nil
-    if slot and HasAction and HasAction(slot) then
-      local name = GetActionDisplayName(slot)
-      return name or ("Bar" .. bn .. " #" .. bt), GetActionTexture(slot), slot, nil, wowFrame
-    end
-    return "Bar" .. bn .. " #" .. bt, nil, slot, nil, wowFrame
-  end
-
-  return binding, nil, nil, nil, nil
+  return BindingsModule.GetBindingInfo(key, modifier)
 end
 
 ---------------------------------------------------------------------------
@@ -2071,103 +1949,16 @@ end
 -- Update: usability coloring, range, active highlight, proc glow
 ---------------------------------------------------------------------------
 UpdateUsability = function()
-  if IndicatorsModule and IndicatorsModule.UpdateUsability then
-    IndicatorsModule.UpdateUsability({
-      currentModifierState = currentModifierState,
-      buttons = buttons,
-      CollectGlowingWoWSources = CollectGlowingWoWSources,
-      GetLiveActionSlotFromBinding = GetLiveActionSlotFromBinding,
-      IsWoWButtonPressed = IsWoWButtonPressed,
-      ApplyProcSourceVisual = ApplyProcSourceVisual,
-      EnsureProcAnimation = EnsureProcAnimation,
-      StopProcAnimation = StopProcAnimation,
-    })
-    return
-  end
-  local ms = currentModifierState or "NONE"
-  local glowingSources = CollectGlowingWoWSources()
-  local glowingSlots = {}
-  local glowingSourceBySlot = {}
-  for _, src in ipairs(glowingSources) do
-    if src and src.slot then
-      local nslot = tonumber(src.slot)
-      if nslot then
-        glowingSlots[nslot] = true
-        if not glowingSourceBySlot[nslot] then
-          glowingSourceBySlot[nslot] = src
-        end
-      end
-    end
-  end
-
-  for _, btn in ipairs(buttons) do
-    if btn and btn.bindings then
-      local bd = btn.bindings[ms]
-      local showPressed = false
-      local showProc = false
-      local procSource = nil
-
-      if bd and bd.actionSlot and HasAction and HasAction(bd.actionSlot) then
-        local slot = GetLiveActionSlotFromBinding(bd) or bd.actionSlot
-        bd.actionSlot = slot
-        -- Usability coloring
-        local usable, noMana = IsUsableAction(slot)
-        local inRange = IsActionInRange(slot)
-        if inRange == false then
-          btn.icon:SetVertexColor(1, 0.1, 0.1)
-        elseif not usable then
-          btn.icon:SetVertexColor(0.4, 0.4, 0.4)
-        elseif noMana then
-          btn.icon:SetVertexColor(0.2, 0.2, 1)
-        else
-          btn.icon:SetVertexColor(1, 1, 1)
-        end
-      else
-        btn.icon:SetVertexColor(1, 1, 1)
-      end
-
-      -- Proc / rotation recommendation: show for all glowing source slots.
-      local slot = bd and GetLiveActionSlotFromBinding(bd)
-      if bd and slot then bd.actionSlot = slot end
-      if slot and glowingSlots[slot] then
-        showProc = true
-        procSource = glowingSourceBySlot[slot]
-      end
-
-      -- Keypress indicator: only while mapped WoW button is physically pressed.
-      if not showProc and bd and bd.wowFrame and IsWoWButtonPressed(bd.wowFrame) then
-        showPressed = true
-      end
-
-      -- Keypress highlight/fill
-      if showPressed then
-        if btn.activeBorder then btn.activeBorder:Show() end
-        if btn.activePressFrame then btn.activePressFrame:Hide() end
-        if btn.activeFill then btn.activeFill:Hide() end
-      else
-        if btn.activeBorder then btn.activeBorder:Hide() end
-        if btn.activePressFrame then btn.activePressFrame:Hide() end
-        if btn.activeFill then btn.activeFill:Hide() end
-      end
-      -- Proc recommendation glow (golden)
-      if showProc then
-        ApplyProcSourceVisual(btn, procSource and procSource.frame or nil)
-        if btn.borderFrame then btn.borderFrame:Hide() end
-        if btn.procBorderFrame then btn.procBorderFrame:Hide() end
-        if btn.procBorder then btn.procBorder:Show() end
-        EnsureProcAnimation(btn)
-        if btn.procAnimGroup and not btn._procAnimPlaying then
-          btn.procAnimGroup:Play()
-          btn._procAnimPlaying = true
-        end
-      else
-        if btn.borderFrame then btn.borderFrame:Show() end
-        if btn.procBorderFrame then btn.procBorderFrame:Hide() end
-        StopProcAnimation(btn)
-        btn.procBorder:Hide()
-      end
-    end
-  end
+  IndicatorsModule.UpdateUsability({
+    currentModifierState = currentModifierState,
+    buttons = buttons,
+    CollectGlowingWoWSources = CollectGlowingWoWSources,
+    GetLiveActionSlotFromBinding = GetLiveActionSlotFromBinding,
+    IsWoWButtonPressed = IsWoWButtonPressed,
+    ApplyProcSourceVisual = ApplyProcSourceVisual,
+    EnsureProcAnimation = EnsureProcAnimation,
+    StopProcAnimation = StopProcAnimation,
+  })
 end
 
 ---------------------------------------------------------------------------
@@ -2303,108 +2094,15 @@ local configRegisteredLegacy
 local configWidgets = {}
 
 local function CreateConfigSlider(parent, label, minVal, maxVal, step, fmt, getValue, setValue, yOffset)
-  if ConfigModule and ConfigModule.CreateConfigSlider then
-    return ConfigModule.CreateConfigSlider(parent, label, minVal, maxVal, step, fmt, getValue, setValue, yOffset)
-  end
-  local container = CreateFrame("Frame", nil, parent)
-  container:SetSize(340, 40)
-  container:SetPoint("TOPLEFT", parent, "TOPLEFT", 20, yOffset)
-
-  local title = container:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  title:SetPoint("TOPLEFT", container, "TOPLEFT", 0, 0)
-  title:SetText(label)
-
-  local valueText = container:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  valueText:SetPoint("TOPRIGHT", container, "TOPRIGHT", 0, 0)
-
-  local slider = CreateFrame("Slider", nil, container, "OptionsSliderTemplate")
-  slider:SetPoint("TOPLEFT", container, "TOPLEFT", 0, -14)
-  slider:SetPoint("TOPRIGHT", container, "TOPRIGHT", 0, -14)
-  slider:SetMinMaxValues(minVal, maxVal)
-  slider:SetValueStep(step)
-  slider:SetObeyStepOnDrag(true)
-  if slider.Low then slider.Low:SetText("") end
-  if slider.High then slider.High:SetText("") end
-  if slider.Text then slider.Text:SetText("") end
-
-  slider:SetScript("OnValueChanged", function(self, val)
-    if not self._ready then return end
-    local rounded = step < 1 and (math.floor((val / step) + 0.5) * step) or math.floor(val + 0.5)
-    valueText:SetText(string.format(fmt, rounded))
-    setValue(rounded)
-  end)
-
-  local function Refresh()
-    local v = getValue()
-    slider._ready = false
-    slider:SetValue(v)
-    valueText:SetText(string.format(fmt, v))
-    slider._ready = true
-  end
-  return container, Refresh
+  return ConfigModule.CreateConfigSlider(parent, label, minVal, maxVal, step, fmt, getValue, setValue, yOffset)
 end
 
 local function CreateConfigCheckbox(parent, label, getValue, setValue, x, y)
-  if ConfigModule and ConfigModule.CreateConfigCheckbox then
-    return ConfigModule.CreateConfigCheckbox(parent, label, getValue, setValue, x, y)
-  end
-  local cb = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
-  cb:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
-  local text = cb:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  text:SetPoint("LEFT", cb, "RIGHT", 2, 0)
-  text:SetText(label)
-  cb:SetScript("OnClick", function(self)
-    setValue(self:GetChecked() and true or false)
-  end)
-  local function Refresh()
-    cb:SetChecked(getValue() and true or false)
-  end
-  return cb, Refresh
+  return ConfigModule.CreateConfigCheckbox(parent, label, getValue, setValue, x, y)
 end
 
 local function CreateConfigDropdown(parent, label, options, getValue, setValue, yOffset)
-  if ConfigModule and ConfigModule.CreateConfigDropdown then
-    return ConfigModule.CreateConfigDropdown(parent, label, options, getValue, setValue, yOffset)
-  end
-  local container = CreateFrame("Frame", nil, parent)
-  container:SetSize(340, 56)
-  container:SetPoint("TOPLEFT", parent, "TOPLEFT", 20, yOffset)
-
-  local title = container:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  title:SetPoint("TOPLEFT", container, "TOPLEFT", 0, 0)
-  title:SetText(label)
-
-  local dd = CreateFrame("Frame", nil, container, "UIDropDownMenuTemplate")
-  dd:SetPoint("TOPLEFT", container, "TOPLEFT", -16, -16)
-  UIDropDownMenu_SetWidth(dd, 180)
-  UIDropDownMenu_JustifyText(dd, "LEFT")
-
-  UIDropDownMenu_Initialize(dd, function(self, level)
-    for _, opt in ipairs(options) do
-      local info = UIDropDownMenu_CreateInfo()
-      info.text = opt.text
-      info.value = opt.value
-      info.checked = (getValue() == opt.value)
-      info.func = function()
-        UIDropDownMenu_SetSelectedValue(dd, opt.value)
-        setValue(opt.value)
-      end
-      UIDropDownMenu_AddButton(info, level)
-    end
-  end)
-
-  local function Refresh()
-    local v = getValue()
-    UIDropDownMenu_SetSelectedValue(dd, v)
-    for _, opt in ipairs(options) do
-      if opt.value == v then
-        UIDropDownMenu_SetText(dd, opt.text)
-        break
-      end
-    end
-  end
-
-  return container, Refresh
+  return ConfigModule.CreateConfigDropdown(parent, label, options, getValue, setValue, yOffset)
 end
 
 local function CreateConfigFrame()
@@ -2641,48 +2339,19 @@ anchor:SetScript("OnEvent", function(self, event)
         end
       end
     end)
-  elseif EventsModule and EventsModule.HandleEvent and EventsModule.HandleEvent({
+  else
+    EventsModule.HandleEvent({
       UpdateBindings = UpdateBindings,
       UpdateCooldowns = UpdateCooldowns,
       UpdateUsability = UpdateUsability,
       InCombatLockdown = InCombatLockdown,
       GetPendingBindingRefresh = function() return pendingBindingRefresh end,
       SetPendingBindingRefresh = function(v) pendingBindingRefresh = v and true or false end,
-    }, event) then
-    -- handled by module
-  elseif event == "UPDATE_BINDINGS" then
-    UpdateBindings()
-  elseif event == "ACTIONBAR_UPDATE_COOLDOWN" or event == "SPELL_UPDATE_COOLDOWN" or event == "SPELL_UPDATE_CHARGES" then
-    UpdateCooldowns()
-  elseif event == "ACTIONBAR_SLOT_CHANGED" or event == "ACTIONBAR_PAGE_CHANGED" then
-    -- During combat these events can thrash transient binding/slot reads.
-    -- Keep runtime visuals updating and defer full binding rebuild until combat ends.
-    if InCombatLockdown and InCombatLockdown() then
-      pendingBindingRefresh = true
-      UpdateCooldowns()
-    else
-      UpdateBindings()
-    end
-    UpdateUsability()
-  elseif event == "PLAYER_REGEN_ENABLED" then
-    if pendingBindingRefresh then
-      pendingBindingRefresh = false
-      UpdateBindings()
-    end
-    UpdateCooldowns()
-    UpdateUsability()
-  elseif event == "ACTIONBAR_UPDATE_USABLE"
-      or event == "ACTIONBAR_UPDATE_STATE"
-      or event == "SPELL_ACTIVATION_OVERLAY_GLOW_SHOW"
-      or event == "SPELL_ACTIVATION_OVERLAY_GLOW_HIDE"
-      or event == "PLAYER_ENTERING_WORLD" then
-    UpdateUsability()
+    }, event)
   end
 end)
 
 -- Fast OnUpdate: modifier detection + usability/range (throttled to ~20fps)
-local updateAccum = 0
-local cooldownAccum = 0
 local runtimeState = (RuntimeModule and RuntimeModule.NewState and RuntimeModule.NewState()) or nil
 local function OnModifierStateChanged(newMod)
   currentModifierState = newMod
@@ -2700,34 +2369,16 @@ local function OnModifierStateChanged(newMod)
   end
 end
 anchor:SetScript("OnUpdate", function(self, elapsed)
-  if RuntimeModule and RuntimeModule.HandleOnUpdate and runtimeState then
-    RuntimeModule.HandleOnUpdate({
-      updateThreshold = 0.02,
-      cooldownThreshold = 0.10,
-      GetCurrentModifierState = GetCurrentModifierState,
-      GetModifierState = function() return currentModifierState end,
-      SetModifierState = function(v) currentModifierState = v end,
-      OnModifierChanged = OnModifierStateChanged,
-      UpdateCooldowns = UpdateCooldowns,
-      UpdateUsability = UpdateUsability,
-    }, runtimeState, elapsed)
-    return
-  end
-  updateAccum = updateAccum + elapsed
-  cooldownAccum = cooldownAccum + elapsed
-  if updateAccum < 0.02 then return end
-  updateAccum = 0
-
-  local newMod = GetCurrentModifierState()
-  if newMod ~= currentModifierState then
-    OnModifierStateChanged(newMod)
-    UpdateCooldowns()
-  end
-  if cooldownAccum >= 0.10 then
-    cooldownAccum = 0
-    UpdateCooldowns()
-  end
-  UpdateUsability()
+  RuntimeModule.HandleOnUpdate({
+    updateThreshold = 0.02,
+    cooldownThreshold = 0.10,
+    GetCurrentModifierState = GetCurrentModifierState,
+    GetModifierState = function() return currentModifierState end,
+    SetModifierState = function(v) currentModifierState = v end,
+    OnModifierChanged = OnModifierStateChanged,
+    UpdateCooldowns = UpdateCooldowns,
+    UpdateUsability = UpdateUsability,
+  }, runtimeState, elapsed)
 end)
 
 ---------------------------------------------------------------------------
