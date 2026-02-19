@@ -107,28 +107,46 @@ function Bindings.GetBindingInfo(key, modifier)
 
   local an = binding:match("^ACTIONBUTTON(%d+)$")
   if an then
-    local slot = D.GetRealActionSlot and D.GetRealActionSlot(tonumber(an)) or nil
-    local icon = (slot and HasAction and HasAction(slot)) and GetActionTexture(slot) or nil
-    local name = D.GetActionDisplayName and D.GetActionDisplayName(slot) or nil
     local wowFrame = _G["ActionButton" .. an]
+    local slot = nil
+    if wowFrame then
+      slot = wowFrame.action or (wowFrame.GetAttribute and wowFrame:GetAttribute("action")) or nil
+    end
+    if not slot then
+      slot = D.GetRealActionSlot and D.GetRealActionSlot(tonumber(an)) or nil
+    end
+    slot = D.SafeNumber and D.SafeNumber(slot, nil) or slot
+    if not (slot and HasAction and HasAction(slot)) then
+      return ("Action " .. tostring(an) .. " (Empty)"), nil, nil, nil, wowFrame
+    end
+    local icon = GetActionTexture(slot)
+    local name = D.GetActionDisplayName and D.GetActionDisplayName(slot) or nil
     return name or ("Action " .. an), icon, slot, nil, wowFrame
   end
 
   local bn, bt = binding:match("^MULTIACTIONBAR(%d+)BUTTON(%d+)$")
   if bn and bt then
-    local af, as, ab = Bindings.FindActionButtonByKeyLabel(key)
+    local af, as, ab = Bindings.FindActionButtonByKeyLabel(bindKey)
     if af and as then
       local name = D.GetActionDisplayName and D.GetActionDisplayName(as) or nil
       return name or ("Action " .. tostring(ab)), GetActionTexture(as), as, nil, af
     end
-    local slot = D.GetMultiBarActionSlot and D.GetMultiBarActionSlot(tonumber(bn), tonumber(bt)) or nil
+    local barNum, btnNum = tonumber(bn), tonumber(bt)
     local prefix = D.MULTIBAR_PREFIX and D.MULTIBAR_PREFIX[tonumber(bn)] or nil
     local wowFrame = prefix and _G[prefix .. bt] or nil
-    if slot and HasAction and HasAction(slot) then
-      local name = D.GetActionDisplayName and D.GetActionDisplayName(slot) or nil
-      return name or ("Bar" .. bn .. " #" .. bt), GetActionTexture(slot), slot, nil, wowFrame
+    local slot = nil
+    if wowFrame then
+      slot = wowFrame.action or (wowFrame.GetAttribute and wowFrame:GetAttribute("action")) or nil
     end
-    return "Bar" .. bn .. " #" .. bt, nil, slot, nil, wowFrame
+    if not slot then
+      slot = D.GetMultiBarActionSlot and D.GetMultiBarActionSlot(barNum, btnNum) or nil
+    end
+    slot = D.SafeNumber and D.SafeNumber(slot, nil) or slot
+    if not (slot and HasAction and HasAction(slot)) then
+      return ("Bar" .. tostring(bn) .. " #" .. tostring(bt) .. " (Empty)"), nil, nil, nil, wowFrame
+    end
+    local name = D.GetActionDisplayName and D.GetActionDisplayName(slot) or nil
+    return name or ("Bar" .. bn .. " #" .. bt), GetActionTexture(slot), slot, nil, wowFrame
   end
 
   return binding, nil, nil, nil, nil

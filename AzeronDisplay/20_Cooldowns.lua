@@ -33,7 +33,6 @@ function Cooldowns.UpdateSpecialState(bd, wowShown, wowStart, wowDur, now, expec
   local expected = SN(expectedDur, 0)
   if expected <= 0 then
     expected = SN(bd and bd._specCdFallbackDur, 0)
-    if expected <= 0 then expected = 34.0 end
   end
 
   if wowShown then
@@ -46,13 +45,15 @@ function Cooldowns.UpdateSpecialState(bd, wowShown, wowStart, wowDur, now, expec
       if ws > 0 and wd > 1.6 and wd < 120 then
         bd._specCdDur = wd
         bd._specCdFallbackDur = wd
-      else
+      elseif expected > 0 then
         bd._specCdDur = expected
+      else
+        bd._specCdDur = 0
       end
     end
     local cs = SN(bd and bd._specCdStart, now)
-    local cd = SN(bd and bd._specCdDur, expected)
-    local remain = (cs > 0 and cd > 0) and math.max(0, (cs + cd) - now) or 0
+    local cd = SN(bd and bd._specCdDur, 0)
+    local remain = (cs > 0 and cd > 1.6) and math.max(0, (cs + cd) - now) or 0
     return cs, cd, remain
   end
 

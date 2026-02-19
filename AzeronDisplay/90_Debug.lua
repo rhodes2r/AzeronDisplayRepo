@@ -1,4 +1,5 @@
 local ns = _G.AzeronDisplayNS or {}
+local out = ns.Print or print
 
 SLASH_AZERONDISPLAY1 = "/azeron"
 SlashCmdList["AZERONDISPLAY"] = function(msg)
@@ -6,5 +7,5 @@ SlashCmdList["AZERONDISPLAY"] = function(msg)
     ns.api.HandleSlashCommand(msg)
     return
   end
-  print("AzeronDisplay: slash handler unavailable")
+  out("AzeronDisplay: slash handler unavailable")
 end

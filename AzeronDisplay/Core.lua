@@ -6,6 +6,43 @@ local ADDON_NAME = "AzeronDisplay"
 local NS = _G.AzeronDisplayNS or {}
 _G.AzeronDisplayNS = NS
 
+local DEBUG_TAB_NAME = "DBG_RUN"
+local _basePrint = _G.print
+local function GetDebugOutputFrame()
+  for i = 1, 10 do
+    local tab = _G["ChatFrame" .. i .. "Tab"]
+    local frame = _G["ChatFrame" .. i]
+    if tab and frame and tab.GetText and tab:GetText() == DEBUG_TAB_NAME then
+      return frame
+    end
+  end
+  return nil
+end
+NS.Print = function(...)
+  local n = select("#", ...)
+  local msg = ""
+  for i = 1, n do
+    local ok, s = pcall(tostring, select(i, ...))
+    local part = (ok and type(s) == "string") and s or "<secret>"
+    if msg == "" then
+      msg = part
+    else
+      local okJoin, joined = pcall(function(a, b) return a .. " " .. b end, msg, part)
+      msg = okJoin and joined or (msg .. " <secret>")
+    end
+  end
+  local f = GetDebugOutputFrame()
+  if f and f.AddMessage then
+    local okAdd = pcall(f.AddMessage, f, msg)
+    if not okAdd then
+      _basePrint(msg)
+    end
+  else
+    _basePrint(msg)
+  end
+end
+local print = NS.Print
+
 AzeronDisplayDB = AzeronDisplayDB or {}
 local DB
 
@@ -392,6 +429,20 @@ local function GetLiveActionSlotFromBinding(bd)
     local liveNum = SafeNumber(live, nil)
     if liveNum then
       slot = liveNum
+    elseif wf.GetName then
+      local n = wf:GetName() or ""
+      local ab = n:match("^ActionButton(%d+)$")
+      if ab then
+        slot = SafeNumber(GetRealActionSlot(tonumber(ab)), slot)
+      else
+        for bar, prefix in pairs(MULTIBAR_PREFIX) do
+          local b = n:match("^" .. prefix .. "(%d+)$")
+          if b then
+            slot = SafeNumber(GetMultiBarActionSlot(bar, tonumber(b)), slot)
+            break
+          end
+        end
+      end
     end
   end
   return slot
@@ -1165,9 +1216,17 @@ ApplyButtonVisualSettings = function(btn)
     anim = math.floor(ClampNumber(procRaw.anim, 1, 6, DEFAULT_SETTINGS.proc.anim) + 0.5),
   }
   local keyTextSize = math.floor(ClampNumber(DB and DB.settings and DB.settings.keyTextSize, 6, 24, DEFAULT_SETTINGS.keyTextSize) + 0.5)
+  local mainScale = ClampNumber(DB and DB.settings and DB.settings.main and DB.settings.main.scale, 0.4, 2.0, 1.0)
+  local numpadScale = ClampNumber(DB and DB.settings and DB.settings.numpad and DB.settings.numpad.scale, 0.4, 2.0, 1.0)
 
   if btn.keyLabel then
     btn.keyLabel:SetFont(STANDARD_TEXT_FONT, keyTextSize, "OUTLINE")
+    if btn.info and btn.info.section == "numpad" then
+      local ratio = mainScale / math.max(0.01, numpadScale)
+      btn.keyLabel:SetScale(ClampNumber(ratio, 0.5, 3.0, 1.0))
+    else
+      btn.keyLabel:SetScale(1.0)
+    end
   end
 
   if btn.activeBorder then
@@ -1567,9 +1626,11 @@ UpdateBindings = function()
       }
       -- Preserve last-known runtime data if this refresh returns partial/empty values.
       if old then
-        if nb.icon == nil then nb.icon = old.icon end
-        if nb.actionSlot == nil then nb.actionSlot = old.actionSlot end
-        if nb.wowFrame == nil then nb.wowFrame = old.wowFrame end
+        if nb.name ~= "Unbound" then
+          if nb.icon == nil then nb.icon = old.icon end
+          if nb.actionSlot == nil then nb.actionSlot = old.actionSlot end
+          if nb.wowFrame == nil then nb.wowFrame = old.wowFrame end
+        end
         nb._activeCooldownSig = old._activeCooldownSig
         nb._activeCooldownStart = old._activeCooldownStart
         nb._activeCooldownDur = old._activeCooldownDur
@@ -1577,6 +1638,12 @@ UpdateBindings = function()
         nb._cooldownSig = old._cooldownSig
         nb._cooldownStart = old._cooldownStart
         nb._cooldownDur = old._cooldownDur
+        nb._specCdShown = old._specCdShown
+        nb._specCdStart = old._specCdStart
+        nb._specCdDur = old._specCdDur
+        nb._wowCdShown = old._wowCdShown
+        nb._wowCdStart = old._wowCdStart
+        nb._wowCdDur = old._wowCdDur
       end
       newBindings[mod] = nb
     end
@@ -1635,6 +1702,31 @@ UpdateCooldowns = function()
           bd._lastGoodSlot = slot
           actionSig = tostring(slot)
           hasRealAction = (HasAction and HasAction(slot)) and true or false
+          -- Live slot can become empty when actions are moved; clear stale icon immediately.
+          if (not hasRealAction) and bd.icon ~= nil then
+            bd.icon = nil
+            if btn.icon then
+              btn.icon:SetTexture(nil)
+            end
+          end
+          if GetActionTexture then
+            local liveIcon = GetActionTexture(slot)
+            if liveIcon then
+              local iconSig = tostring(slot) .. "|" .. tostring(liveIcon)
+              if bd._liveIconSig == iconSig then
+                bd._liveIconSeen = SafeNumber(bd._liveIconSeen, 0) + 1
+              else
+                bd._liveIconSig = iconSig
+                bd._liveIconSeen = 1
+              end
+              if liveIcon ~= bd.icon and SafeNumber(bd._liveIconSeen, 0) >= 2 then
+                bd.icon = liveIcon
+                if btn.icon then
+                  btn.icon:SetTexture(liveIcon)
+                end
+              end
+            end
+          end
         end
         if slot then
           local hasAction = hasRealAction
@@ -1670,12 +1762,14 @@ UpdateCooldowns = function()
                 resolvedSpellID = 0
               end
             end
+            bd._resolvedSpellID = resolvedSpellID
             if CooldownModule and CooldownModule.GetExpectedDuration then
               specialCooldownExpected = CooldownModule.GetExpectedDuration(resolvedSpellID, SPECIAL_COOLDOWN_SPELLS)
             else
               specialCooldownExpected = SPECIAL_COOLDOWN_SPELLS[resolvedSpellID]
             end
-            isSpecialCooldownBinding = (resolvedSpellID > 0)
+            -- Restrict state-driven/synthetic cooldown handling to explicit spell overrides only.
+            isSpecialCooldownBinding = (SPECIAL_COOLDOWN_SPELLS[resolvedSpellID] ~= nil)
           end
           if GetActionCooldown then
             local ok, s, d = pcall(GetActionCooldown, slot)
@@ -1723,11 +1817,15 @@ UpdateCooldowns = function()
             end
             return 0
           end
-          local actionRemain = considerTimer(actionStart, actionDur)
-          local apiRemain = considerTimer(apiStart, apiDur)
-          local wowRemain = considerTimer(wowStart, wowDur)
+          local actionRemain = hasRealAction and considerTimer(actionStart, actionDur) or 0
+          local apiRemain = hasRealAction and considerTimer(apiStart, apiDur) or 0
+          local wowRemain = hasRealAction and considerTimer(wowStart, wowDur) or 0
 
-          if isSpecialCooldownBinding then
+          if hasRealAction then
+            local expectedAny = SafeNumber(specialCooldownExpected, 0)
+            if expectedAny <= 0 and CooldownModule and CooldownModule.GetExpectedDuration then
+              expectedAny = SafeNumber(CooldownModule.GetExpectedDuration(SafeNumber(bd._resolvedSpellID, 0), SPECIAL_COOLDOWN_SPELLS), 0)
+            end
             if CooldownModule and CooldownModule.UpdateSpecialState then
               local cs, cd = CooldownModule.UpdateSpecialState(
                 bd,
@@ -1735,45 +1833,28 @@ UpdateCooldowns = function()
                 wowStart,
                 wowDur,
                 now,
-                specialCooldownExpected
+                expectedAny
               )
-              cdStart, cdDur = SafeNumber(cs, 0), SafeNumber(cd, 0)
-            else
-              local expectedDur = SafeNumber(specialCooldownExpected, 0)
-              if expectedDur <= 0 then
-                expectedDur = SafeNumber(bd._specCdFallbackDur, 0)
-              end
-              if wowShown then
-                local wasShown = (bd._specCdShown == true)
-                if not wasShown then
-                  bd._specCdShown = true
-                  bd._specCdStart = now
-                  local ws, wd = NormalizeCooldownPair(wowStart, wowDur)
-                  if ws > 0 and wd > 1.6 and wd < 120 then
-                    bd._specCdDur = wd
-                    bd._specCdFallbackDur = wd
-                  else
-                    bd._specCdDur = expectedDur
-                  end
-                end
-                local cs = SafeNumber(bd._specCdStart, now)
-                local cd = SafeNumber(bd._specCdDur, expectedDur)
+              local sr = (cs > 0 and cd > 1.6) and math.max(0, (cs + cd) - now) or 0
+              if sr > bestRemain then
+                bestRemain = sr
                 cdStart, cdDur = cs, cd
-              else
-                cdStart, cdDur = 0, 0
-                bd._specCdShown = false
-                bd._specCdStart, bd._specCdDur = nil, nil
               end
             end
-            bestRemain = (cdStart > 0 and cdDur > 0) and math.max(0, (cdStart + cdDur) - now) or 0
+          else
+            bd._specCdShown = false
+            bd._specCdStart, bd._specCdDur = nil, nil
           end
           nativeBestRemain = math.max(actionRemain, apiRemain, wowRemain)
+
           if nativeBestRemain > 0 then
             bd._spellTrustSig = actionSig
             bd._spellTrustUntil = now + nativeBestRemain + 0.5
           end
           local spellTrusted = (bd._spellTrustSig == actionSig) and (SafeNumber(bd._spellTrustUntil, 0) > now)
-          if nativeBestRemain > 0 or spellTrusted then
+          local hasDirectSpellTimer = (spellStart > 0 and spellDur > 1.6)
+          -- Allow spell cooldown fallback when it has a real timer, even if native action timers are currently zero.
+          if nativeBestRemain > 0 or spellTrusted or hasDirectSpellTimer then
             considerTimer(spellStart, spellDur)
           end
           if GetActionCharges then
@@ -1791,6 +1872,9 @@ UpdateCooldowns = function()
         if not hasRealAction then
           bd._specCdShown = false
           bd._specCdStart, bd._specCdDur = nil, nil
+          bd._wowCdShown = false
+          bd._wowCdStart, bd._wowCdDur = nil, nil
+          bd._resolvedSpellID = nil
         end
         local safeStart = SafeNumber(cdStart, 0)
         local safeDur = SafeNumber(cdDur, 0)
@@ -1852,10 +1936,10 @@ UpdateCooldowns = function()
         if CooldownModule and CooldownModule.GetSpecialRemain then
           specCdRemain = SafeNumber(CooldownModule.GetSpecialRemain(bd, now), 0)
         else
-          specCdRemain = (bd._specCdShown == true and specCdStart > 0 and specCdDur > 0)
+          specCdRemain = (bd._specCdShown == true and specCdStart > 0 and specCdDur > 1.6)
               and math.max(0, (specCdStart + specCdDur) - now) or 0
         end
-        local specialTextMode = isSpecialCooldownBinding or (specCdRemain > 0)
+        local specialTextMode = (specCdRemain > 0)
 
         local safeCStart = SafeNumber(chargeStart, 0)
         local safeCDur = SafeNumber(chargeDur, 0)
@@ -1875,13 +1959,20 @@ UpdateCooldowns = function()
             displayStart, displayDur = safeCStart, safeCDur
           end
         end
-        if displayStart > 0 and displayDur > 0 then
-          local remain = math.max(0, (displayStart + displayDur) - now)
+        local remain = (displayStart > 0 and displayDur > 0) and math.max(0, (displayStart + displayDur) - now) or 0
+        if displayStart > 0 and displayDur > 1.6 and remain > 0.05 then
           if specialTextMode then
             -- Special cooldowns: text-first cooldown display; avoid spiral artifacts.
             btn.cooldown:Clear()
+            btn._lastCdStart, btn._lastCdDur = nil, nil
           else
-            btn.cooldown:SetCooldown(displayStart, displayDur)
+            local changed = (not btn._lastCdStart)
+              or math.abs((btn._lastCdStart or 0) - displayStart) > 0.15
+              or math.abs((btn._lastCdDur or 0) - displayDur) > 0.15
+            if changed then
+              btn.cooldown:SetCooldown(displayStart, displayDur)
+              btn._lastCdStart, btn._lastCdDur = displayStart, displayDur
+            end
           end
           if specialTextMode and remain > 0 then
             if btn.icon and btn.icon.SetDesaturated then
@@ -1899,16 +1990,17 @@ UpdateCooldowns = function()
             end
           end
           if btn.cooldownText then
-            if remain >= 10 then
-              btn.cooldownText:SetText(tostring(math.floor(remain + 0.5)))
+            if remain >= 60 then
+              btn.cooldownText:SetText(tostring(math.ceil(remain / 60)) .. "M")
             elseif remain > 0 then
-              btn.cooldownText:SetText(string.format("%.1f", remain))
+              btn.cooldownText:SetText(tostring(math.ceil(remain)))
             else
               btn.cooldownText:SetText("")
             end
           end
         else
           btn.cooldown:Clear()
+          btn._lastCdStart, btn._lastCdDur = nil, nil
           if btn.icon and btn.icon.SetDesaturated then
             btn.icon:SetDesaturated(false)
           end
@@ -2304,6 +2396,7 @@ anchor:RegisterEvent("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW")
 anchor:RegisterEvent("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE")
 anchor:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
 anchor:RegisterEvent("ACTIONBAR_PAGE_CHANGED")
+anchor:RegisterEvent("UPDATE_SHAPESHIFT_FORM")
 anchor:RegisterEvent("PLAYER_REGEN_ENABLED")
 anchor:RegisterEvent("PLAYER_ENTERING_WORLD")
 local pendingBindingRefresh = false
@@ -2388,8 +2481,8 @@ NS.api = NS.api or {}
 NS.api.HandleSlashCommand = function(msg)
   local cmd, rest = "", ""
   if msg and msg:match("%S") then
-    cmd, rest = msg:lower():match("^%s*(%S+)%s*(.-)%s*$")
-    cmd = cmd or ""
+    cmd, rest = msg:match("^%s*(%S+)%s*(.-)%s*$")
+    cmd = (cmd or ""):lower()
     rest = rest or ""
   end
 
@@ -2408,10 +2501,12 @@ NS.api.HandleSlashCommand = function(msg)
     print("  /azeron proc <width|height|alpha|z|anim> <value> — Set proc indicator")
     print("  /azeron indicatorsreset — Reset keydown/proc visuals")
     print("  /azeron config — Open AddOns config panel")
+    print("  /azeron refresh — Rebuild bindings/icons/cooldowns now")
     print("  /azeron resetkeys — Reset all base key mappings")
     print("  /azeron getbindicon <key> — Debug binding info")
     print("  /azeron keystate <key> — Direct WoW key->action button state (single source)")
     print("  /azeron cddebug [key] — Dump cooldown/charge state (optional key filter)")
+    print("  /azeron cdbybutton <ActionBarButtonName> — Raw CooldownFrame test (macro-equivalent)")
     print("  /azeron procdebug — Show active rotation recommendations")
     print("  /azeron procsource — Dump source WoW glow frame style info")
     print("  Right-click any button to change its base key.")
@@ -2424,6 +2519,13 @@ NS.api.HandleSlashCommand = function(msg)
 
   elseif cmd == "config" then
     OpenConfigFrame()
+
+  elseif cmd == "refresh" then
+    currentModifierState = nil
+    UpdateBindings()
+    UpdateCooldowns()
+    UpdateUsability()
+    print(ADDON_NAME .. ": refreshed bindings/icons/cooldowns")
 
   elseif cmd == "scale" then
     local parts = {}
@@ -2912,6 +3014,103 @@ NS.api.HandleSlashCommand = function(msg)
         print(ADDON_NAME .. ": no active ACTIONBUTTON cooldowns to report")
       end
     end
+
+  elseif cmd == "cdbybutton" then
+    local buttonName = rest and rest:match("^%s*(.-)%s*$") or ""
+    if buttonName == "" then
+      print("Usage: /azeron cdbybutton <ActionBarButtonName>")
+      return
+    end
+    local b = _G[buttonName]
+    local c = b and (b.cooldown or _G[(b.GetName and b:GetName() or "") .. "Cooldown"]) or nil
+    local s, d = 0, 0
+    local sRaw, dRaw = 0, 0
+    if c and c.GetCooldownTimes then
+      s, d = c:GetCooldownTimes()
+      sRaw, dRaw = s, d
+      s = tonumber(tostring(s)) or 0
+      d = tonumber(tostring(d)) or 0
+    end
+    local nowMS = (GetTime and GetTime() or 0) * 1000
+    local shown = (c and c.IsShown and c:IsShown()) and true or false
+    print(format("%.1f", max(0, (s + d - nowMS) / 1e3)), shown)
+    if not b then
+      print(ADDON_NAME .. ": button '" .. tostring(buttonName) .. "' not found")
+      return
+    end
+
+    local slot = b.action or (b.GetAttribute and b:GetAttribute("action")) or nil
+    slot = SafeNumber(slot, nil)
+    local actionType, actionID = nil, nil
+    if slot and GetActionInfo then
+      local ok, at, aid = pcall(GetActionInfo, slot)
+      if ok then
+        actionType, actionID = at, aid
+      end
+    end
+    local spellIDs = slot and GetActionSpellCandidates(slot) or {}
+    local spellID = spellIDs and spellIDs[1] or nil
+    local aStart, aDur = 0, 0
+    if slot and GetActionCooldown then
+      local ok, as, ad = pcall(GetActionCooldown, slot)
+      if ok then
+        aStart, aDur = NormalizeCooldownPair(as, ad)
+      end
+    end
+    local apiStart, apiDur = 0, 0
+    if slot then
+      local cs, cd = GetCActionBarCooldown(slot, (actionType == "spell") and actionID or spellID)
+      apiStart, apiDur = SafeNumber(cs, 0), SafeNumber(cd, 0)
+    end
+    local charges, maxCharges, chargeStart, chargeDur = nil, nil, 0, 0
+    if slot and GetActionCharges then
+      local ok, c1, c2, cs, cd = pcall(GetActionCharges, slot)
+      if ok then
+        charges, maxCharges = c1, c2
+        chargeStart, chargeDur = SafeNumber(cs, 0), SafeNumber(cd, 0)
+      end
+    end
+    local count = nil
+    if slot and GetActionCount then
+      local ok, n = pcall(GetActionCount, slot)
+      if ok then count = n end
+    end
+    local usable, noMana, inRange = nil, nil, nil
+    if slot and IsUsableAction then
+      local ok, u, nm = pcall(IsUsableAction, slot)
+      if ok then usable, noMana = u, nm end
+    end
+    if slot and IsActionInRange then
+      local ok, r = pcall(IsActionInRange, slot)
+      if ok then inRange = r end
+    end
+    local iconTex = GetWoWButtonIconTexture(b, slot) or (slot and GetActionTexture and GetActionTexture(slot)) or nil
+    local iconMark = GetChatIconMarkup(iconTex, 14)
+    local now = GetTime and GetTime() or 0
+    local cdRemain = max(0, (s + d - nowMS) / 1e3)
+    local actionRemain = (aStart > 0 and aDur > 0) and max(0, (aStart + aDur) - now) or 0
+    local apiRemain = (apiStart > 0 and apiDur > 0) and max(0, (apiStart + apiDur) - now) or 0
+    local chargeRemain = (chargeStart > 0 and chargeDur > 0) and max(0, (chargeStart + chargeDur) - now) or 0
+    print(
+      ADDON_NAME .. ": button=" .. tostring(buttonName)
+      .. " slot=" .. tostring(slot or "-")
+      .. " actionType=" .. tostring(actionType or "-")
+      .. " actionID=" .. tostring(actionID or "-")
+      .. " spellID=" .. tostring(spellID or "-")
+      .. " sMS=" .. tostring(tonumber(tostring(sRaw)) or 0)
+      .. " dMS=" .. tostring(tonumber(tostring(dRaw)) or 0)
+      .. " cd=" .. format("%.1f", cdRemain)
+      .. " actionCd=" .. format("%.1f", actionRemain)
+      .. " apiCd=" .. format("%.1f", apiRemain)
+      .. " shown=" .. tostring(shown)
+      .. " charges=" .. tostring(charges) .. "/" .. tostring(maxCharges)
+      .. " chargeCD=" .. format("%.1f", chargeRemain)
+      .. " count=" .. tostring(count)
+      .. " usable=" .. tostring(usable)
+      .. " noMana=" .. tostring(noMana)
+      .. " inRange=" .. tostring(inRange)
+      .. " icon=" .. iconMark
+    )
 
   elseif cmd == "procdebug" then
     -- Scan our Azeron buttons for active proc glow (AssistedCombatHighlightFrame)

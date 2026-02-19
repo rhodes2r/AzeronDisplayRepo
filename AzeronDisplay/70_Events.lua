@@ -16,7 +16,21 @@ function Events.HandleEvent(ctx, event)
     return true
   end
 
-  if event == "ACTIONBAR_SLOT_CHANGED" or event == "ACTIONBAR_PAGE_CHANGED" then
+  if event == "ACTIONBAR_PAGE_CHANGED" then
+    if ctx.UpdateBindings then ctx.UpdateBindings() end
+    if ctx.UpdateCooldowns then ctx.UpdateCooldowns() end
+    if ctx.UpdateUsability then ctx.UpdateUsability() end
+    return true
+  end
+
+  if event == "UPDATE_SHAPESHIFT_FORM" then
+    if ctx.UpdateBindings then ctx.UpdateBindings() end
+    if ctx.UpdateCooldowns then ctx.UpdateCooldowns() end
+    if ctx.UpdateUsability then ctx.UpdateUsability() end
+    return true
+  end
+
+  if event == "ACTIONBAR_SLOT_CHANGED" then
     local inCombat = ctx.InCombatLockdown and ctx.InCombatLockdown() or false
     if inCombat then
       if ctx.SetPendingBindingRefresh then ctx.SetPendingBindingRefresh(true) end
