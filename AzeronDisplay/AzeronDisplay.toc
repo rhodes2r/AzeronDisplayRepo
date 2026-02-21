@@ -7,6 +7,7 @@
 00_Namespace.lua
 01_Constants.lua
 20_Cooldowns.lua
+21_CooldownEngine.lua
 30_Bindings.lua
 40_Indicators.lua
 50_Config.lua

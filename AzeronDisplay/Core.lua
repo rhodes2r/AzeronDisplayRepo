@@ -88,6 +88,7 @@ local SPECIAL_COOLDOWN_SPELLS = (NS.constants and NS.constants.SPECIAL_COOLDOWN_
   [22812] = 34.0, -- Barkskin
 }
 local CooldownModule = NS.modules and NS.modules.Cooldowns or nil
+local CooldownEngineModule = NS.modules and NS.modules.CooldownEngine or nil
 local BindingsModule = NS.modules and NS.modules.Bindings or nil
 local IndicatorsModule = NS.modules and NS.modules.Indicators or nil
 local ConfigModule = NS.modules and NS.modules.Config or nil
@@ -722,6 +723,25 @@ end
 
 local function ResolveWoWBindingFrameAndSlot(bindKey)
   return BindingsModule.ResolveWoWBindingFrameAndSlot(bindKey)
+end
+
+if CooldownEngineModule and CooldownEngineModule.Init then
+  CooldownEngineModule.Init({
+    SafeNumber = SafeNumber,
+    NormalizeCooldownPair = NormalizeCooldownPair,
+    GetBaseKey = GetBaseKey,
+    ResolveWoWBindingFrameAndSlot = ResolveWoWBindingFrameAndSlot,
+    GetLiveActionSlotFromBinding = GetLiveActionSlotFromBinding,
+    GetActionSpellCandidates = GetActionSpellCandidates,
+    GetCActionBarCooldown = GetCActionBarCooldown,
+    GetSpellCooldownFromActionSlot = GetSpellCooldownFromActionSlot,
+    GetWoWButtonCooldown = GetWoWButtonCooldown,
+    IsWoWButtonCooldownShown = IsWoWButtonCooldownShown,
+    GetWoWButtonIconTexture = GetWoWButtonIconTexture,
+    CooldownModule = CooldownModule,
+    SPECIAL_COOLDOWN_SPELLS = SPECIAL_COOLDOWN_SPELLS,
+    cooldownLocks = cooldownLocks,
+  })
 end
 
 local function CollectGlowingWoWSources()
@@ -1673,334 +1693,14 @@ UpdateCooldowns = function()
     if btn and btn.cooldown and btn.bindings then
       local bd = btn.bindings[ms]
       if bd then
-        local baseKey = GetBaseKey(btn.keyID)
-        local bindKey = (ms == "NONE") and baseKey or (ms .. "-" .. baseKey)
-        local lockKey = tostring(bindKey or btn.keyID or "")
-        local _, resolvedFrame, resolvedSlot = ResolveWoWBindingFrameAndSlot(bindKey)
-        if resolvedFrame then bd.wowFrame = resolvedFrame end
-        if resolvedSlot then bd.actionSlot = resolvedSlot end
-
-        local cdStart, cdDur = 0, 0
-        local actionStart, actionDur = 0, 0
-        local apiStart, apiDur = 0, 0
-        local spellStart, spellDur = 0, 0
-        local wowStart, wowDur = 0, 0
-        local wowShown = false
-        local charges, maxCharges = nil, nil
-        local chargeStart, chargeDur = nil, nil
-        local stackCount = nil
-        local hasRealAction = false
-        local isSpecialCooldownBinding = false
-        local specialCooldownExpected = nil
-        local slot = GetLiveActionSlotFromBinding(bd)
-        if (not slot or slot <= 0) and bd._lastGoodSlot then
-          slot = SafeNumber(bd._lastGoodSlot, nil)
+        if CooldownEngineModule and CooldownEngineModule.UpdateButtonCooldown then
+          CooldownEngineModule.UpdateButtonCooldown(btn, bd, ms)
         end
-        local actionSig = "none"
-        if slot then
-          bd.actionSlot = slot
-          bd._lastGoodSlot = slot
-          actionSig = tostring(slot)
-          hasRealAction = (HasAction and HasAction(slot)) and true or false
-          -- Live slot can become empty when actions are moved; clear stale icon immediately.
-          if (not hasRealAction) and bd.icon ~= nil then
-            bd.icon = nil
-            if btn.icon then
-              btn.icon:SetTexture(nil)
-            end
-          end
-          if GetActionTexture then
-            local liveIcon = GetActionTexture(slot)
-            if liveIcon then
-              local iconSig = tostring(slot) .. "|" .. tostring(liveIcon)
-              if bd._liveIconSig == iconSig then
-                bd._liveIconSeen = SafeNumber(bd._liveIconSeen, 0) + 1
-              else
-                bd._liveIconSig = iconSig
-                bd._liveIconSeen = 1
-              end
-              if liveIcon ~= bd.icon and SafeNumber(bd._liveIconSeen, 0) >= 2 then
-                bd.icon = liveIcon
-                if btn.icon then
-                  btn.icon:SetTexture(liveIcon)
-                end
-              end
-            end
-          end
-        end
-        if slot then
-          local hasAction = hasRealAction
-          local slotActionType, slotActionID = nil, nil
-          if GetActionInfo then
-            local okai, at, aid = pcall(GetActionInfo, slot)
-            if okai then
-              slotActionType, slotActionID = at, aid
-            end
-          end
-          local primarySpellID = nil
-          local spellIDs = nil
-          do
-            local ids = GetActionSpellCandidates(slot)
-            spellIDs = ids
-            primarySpellID = ids[1]
-            if (not primarySpellID) and bd._lastActionSig == actionSig then
-              local cached = SafeNumber(bd._lastPrimarySpellID, nil)
-              if cached and cached > 0 then
-                primarySpellID = cached
-                spellIDs = { cached }
-              end
-            end
-            if primarySpellID and primarySpellID > 0 then
-              bd._lastActionSig = actionSig
-              bd._lastPrimarySpellID = primarySpellID
-            end
-            local resolvedSpellID = SafeNumber(primarySpellID, 0)
-            if not resolvedSpellID or resolvedSpellID <= 0 then
-              if slotActionType == "spell" then
-                resolvedSpellID = SafeNumber(slotActionID, 0)
-              else
-                resolvedSpellID = 0
-              end
-            end
-            bd._resolvedSpellID = resolvedSpellID
-            if CooldownModule and CooldownModule.GetExpectedDuration then
-              specialCooldownExpected = CooldownModule.GetExpectedDuration(resolvedSpellID, SPECIAL_COOLDOWN_SPELLS)
-            else
-              specialCooldownExpected = SPECIAL_COOLDOWN_SPELLS[resolvedSpellID]
-            end
-            -- Restrict state-driven/synthetic cooldown handling to explicit spell overrides only.
-            isSpecialCooldownBinding = (SPECIAL_COOLDOWN_SPELLS[resolvedSpellID] ~= nil)
-          end
-          if GetActionCooldown then
-            local ok, s, d = pcall(GetActionCooldown, slot)
-            if ok then
-              actionStart, actionDur = NormalizeCooldownPair(s, d)
-            end
-          end
-          do
-            local as, ad = GetCActionBarCooldown(slot, primarySpellID or ((slotActionType == "spell") and slotActionID or nil))
-            apiStart, apiDur = SafeNumber(as, 0), SafeNumber(ad, 0)
-          end
-          do
-            local ss, sd = GetSpellCooldownFromActionSlot(slot, primarySpellID)
-            spellStart, spellDur = NormalizeCooldownPair(ss, sd)
-          end
-          do
-            local ws, wd = GetWoWButtonCooldown(bd)
-            wowStart, wowDur = NormalizeCooldownPair(ws, wd)
-            wowShown = IsWoWButtonCooldownShown(bd)
-            -- Guard against stale frame cooldowns from mismatched icon sources.
-            if (not isSpecialCooldownBinding) and wowDur > 0 and hasAction and bd.wowFrame and GetActionTexture then
-              local slotIcon = GetActionTexture(slot)
-              local frameIcon = GetWoWButtonIconTexture(bd.wowFrame, slot)
-              if slotIcon and frameIcon and slotIcon ~= frameIcon then
-                wowStart, wowDur = 0, 0
-              end
-            end
-          end
-
-          local now = GetTime and GetTime() or 0
-          local bestRemain = 0
-          local nativeBestRemain = 0
-          local function considerTimer(s, d)
-            if s > 0 and d > 0 then
-              -- Ignore global-cooldown-like timers to avoid false positives.
-              if d <= 1.6 then
-                return 0
-              end
-              local r = math.max(0, (s + d) - now)
-              if r > bestRemain then
-                bestRemain = r
-                cdStart, cdDur = s, d
-              end
-              return r
-            end
-            return 0
-          end
-          local actionRemain = hasRealAction and considerTimer(actionStart, actionDur) or 0
-          local apiRemain = hasRealAction and considerTimer(apiStart, apiDur) or 0
-          local wowRemain = hasRealAction and considerTimer(wowStart, wowDur) or 0
-
-          if hasRealAction then
-            local expectedAny = SafeNumber(specialCooldownExpected, 0)
-            if expectedAny <= 0 and CooldownModule and CooldownModule.GetExpectedDuration then
-              expectedAny = SafeNumber(CooldownModule.GetExpectedDuration(SafeNumber(bd._resolvedSpellID, 0), SPECIAL_COOLDOWN_SPELLS), 0)
-            end
-            if CooldownModule and CooldownModule.UpdateSpecialState then
-              local cs, cd = CooldownModule.UpdateSpecialState(
-                bd,
-                wowShown,
-                wowStart,
-                wowDur,
-                now,
-                expectedAny
-              )
-              local sr = (cs > 0 and cd > 1.6) and math.max(0, (cs + cd) - now) or 0
-              if sr > bestRemain then
-                bestRemain = sr
-                cdStart, cdDur = cs, cd
-              end
-            end
-          else
-            bd._specCdShown = false
-            bd._specCdStart, bd._specCdDur = nil, nil
-          end
-          nativeBestRemain = math.max(actionRemain, apiRemain, wowRemain)
-
-          if nativeBestRemain > 0 then
-            bd._spellTrustSig = actionSig
-            bd._spellTrustUntil = now + nativeBestRemain + 0.5
-          end
-          local spellTrusted = (bd._spellTrustSig == actionSig) and (SafeNumber(bd._spellTrustUntil, 0) > now)
-          local hasDirectSpellTimer = (spellStart > 0 and spellDur > 1.6)
-          -- Allow spell cooldown fallback when it has a real timer, even if native action timers are currently zero.
-          if nativeBestRemain > 0 or spellTrusted or hasDirectSpellTimer then
-            considerTimer(spellStart, spellDur)
-          end
-          if GetActionCharges then
-            local okc, c, mc, cs, cd = pcall(GetActionCharges, slot)
-            if okc then
-              charges, maxCharges, chargeStart, chargeDur = c, mc, cs, cd
-            end
-          end
-          if GetActionCount then
-            local okn, n = pcall(GetActionCount, slot)
-            if okn then stackCount = n end
-          end
-        end
-        local now = GetTime and GetTime() or 0
-        if not hasRealAction then
-          bd._specCdShown = false
-          bd._specCdStart, bd._specCdDur = nil, nil
-          bd._wowCdShown = false
-          bd._wowCdStart, bd._wowCdDur = nil, nil
-          bd._resolvedSpellID = nil
-        end
-        local safeStart = SafeNumber(cdStart, 0)
-        local safeDur = SafeNumber(cdDur, 0)
-        if safeStart > 0 and safeDur > 0 then
-          safeStart, safeDur = NormalizeCooldownPair(safeStart, safeDur)
-        end
-        if isSpecialCooldownBinding then
-          bd._activeCooldownSig, bd._activeCooldownStart, bd._activeCooldownDur, bd._activeCooldownEnd = nil, nil, nil, nil
-          cooldownLocks[lockKey] = nil
-        else
-          local activeSig = tostring(bd._activeCooldownSig or "")
-          local activeStart = SafeNumber(bd._activeCooldownStart, 0)
-          local activeDur = SafeNumber(bd._activeCooldownDur, 0)
-          local activeEnd = SafeNumber(bd._activeCooldownEnd, 0)
-          local lock = cooldownLocks[lockKey]
-          local lockSig = lock and tostring(lock.sig or "") or ""
-          local lockStart = lock and SafeNumber(lock.start, 0) or 0
-          local lockDur = lock and SafeNumber(lock.dur, 0) or 0
-          local lockEnd = lock and SafeNumber(lock.endsAt, 0) or 0
-          if activeSig ~= "" and actionSig ~= "none" and activeSig ~= actionSig then
-            bd._activeCooldownSig, bd._activeCooldownStart, bd._activeCooldownDur, bd._activeCooldownEnd = nil, nil, nil, nil
-            activeSig, activeStart, activeDur, activeEnd = "", 0, 0, 0
-          end
-          if safeStart > 0 and safeDur > 0 then
-            local remain = math.max(0, (safeStart + safeDur) - now)
-            bd._activeCooldownSig = actionSig
-            bd._activeCooldownStart = safeStart
-            bd._activeCooldownDur = safeDur
-            bd._activeCooldownEnd = now + remain
-            cooldownLocks[lockKey] = {
-              sig = actionSig,
-              start = safeStart,
-              dur = safeDur,
-              endsAt = now + remain,
-            }
-          else
-            if ((activeSig == actionSig) or (actionSig == "none" and activeSig ~= ""))
-               and activeStart > 0 and activeDur > 0 and activeEnd > now + 0.05 then
-              safeStart, safeDur = activeStart, activeDur
-            elseif ((lockSig == actionSig) or (actionSig == "none" and lockSig ~= ""))
-               and lockStart > 0 and lockDur > 0 and lockEnd > now + 0.05 then
-              safeStart, safeDur = lockStart, lockDur
-              bd._activeCooldownSig = lockSig
-              bd._activeCooldownStart = lockStart
-              bd._activeCooldownDur = lockDur
-              bd._activeCooldownEnd = lockEnd
-            else
-              bd._activeCooldownSig, bd._activeCooldownStart, bd._activeCooldownDur, bd._activeCooldownEnd = nil, nil, nil, nil
-              if actionSig ~= "none" then
-                cooldownLocks[lockKey] = nil
-              end
-            end
-          end
-        end
-
-        local specCdStart = SafeNumber(bd._specCdStart, 0)
-        local specCdDur = SafeNumber(bd._specCdDur, 0)
-        local specCdRemain = 0
-        if CooldownModule and CooldownModule.GetSpecialRemain then
-          specCdRemain = SafeNumber(CooldownModule.GetSpecialRemain(bd, now), 0)
-        else
-          specCdRemain = (bd._specCdShown == true and specCdStart > 0 and specCdDur > 1.6)
-              and math.max(0, (specCdStart + specCdDur) - now) or 0
-        end
-        local specialTextMode = (specCdRemain > 0)
-
-        local safeCStart = SafeNumber(chargeStart, 0)
-        local safeCDur = SafeNumber(chargeDur, 0)
-        local safeCharges = SafeNumber(charges, nil)
-        local safeMaxCharges = SafeNumber(maxCharges, nil)
-        local safeStackCount = SafeNumber(stackCount, nil)
-        local displayStart, displayDur = safeStart, safeDur
-        if specCdRemain > 0 then
-          displayStart, displayDur = specCdStart, specCdDur
-        end
-        local hasChargeRecharge = (safeCStart > 0 and safeCDur > 0 and safeCharges ~= nil and safeMaxCharges ~= nil and safeCharges < safeMaxCharges)
-        if hasChargeRecharge then
-          local cdRemain = (safeStart > 0 and safeDur > 0) and math.max(0, (safeStart + safeDur) - now) or 0
-          local chargeRemain = math.max(0, (safeCStart + safeCDur) - now)
-          -- Prefer the longer-running timer so we do not drop to blank after GCD.
-          if chargeRemain > cdRemain then
-            displayStart, displayDur = safeCStart, safeCDur
-          end
-        end
-        local remain = (displayStart > 0 and displayDur > 0) and math.max(0, (displayStart + displayDur) - now) or 0
-        if displayStart > 0 and displayDur > 1.6 and remain > 0.05 then
-          if specialTextMode then
-            -- Special cooldowns: text-first cooldown display; avoid spiral artifacts.
-            btn.cooldown:Clear()
-            btn._lastCdStart, btn._lastCdDur = nil, nil
-          else
-            local changed = (not btn._lastCdStart)
-              or math.abs((btn._lastCdStart or 0) - displayStart) > 0.15
-              or math.abs((btn._lastCdDur or 0) - displayDur) > 0.15
-            if changed then
-              btn.cooldown:SetCooldown(displayStart, displayDur)
-              btn._lastCdStart, btn._lastCdDur = displayStart, displayDur
-            end
-          end
-          if specialTextMode and remain > 0 then
-            if btn.icon and btn.icon.SetDesaturated then
-              btn.icon:SetDesaturated(true)
-            end
-            if btn.disabledTint then
-              btn.disabledTint:Show()
-            end
-          else
-            if btn.icon and btn.icon.SetDesaturated then
-              btn.icon:SetDesaturated(false)
-            end
-            if btn.disabledTint then
-              btn.disabledTint:Hide()
-            end
-          end
-          if btn.cooldownText then
-            if remain >= 60 then
-              btn.cooldownText:SetText(tostring(math.ceil(remain / 60)) .. "M")
-            elseif remain > 0 then
-              btn.cooldownText:SetText(tostring(math.ceil(remain)))
-            else
-              btn.cooldownText:SetText("")
-            end
-          end
+      else
+        if CooldownEngineModule and CooldownEngineModule.ClearButtonCooldownVisuals then
+          CooldownEngineModule.ClearButtonCooldownVisuals(btn)
         else
           btn.cooldown:Clear()
-          btn._lastCdStart, btn._lastCdDur = nil, nil
           if btn.icon and btn.icon.SetDesaturated then
             btn.icon:SetDesaturated(false)
           end
@@ -2008,30 +1708,8 @@ UpdateCooldowns = function()
             btn.disabledTint:Hide()
           end
           if btn.cooldownText then btn.cooldownText:SetText("") end
+          if btn.countText then btn.countText:SetText("") end
         end
-
-        if btn.countText then
-          local c = safeCharges
-          local mc = safeMaxCharges
-          local sc = safeStackCount
-          if c and mc and mc > 1 then
-            btn.countText:SetText(tostring(c))
-          elseif sc and sc > 1 then
-            btn.countText:SetText(tostring(sc))
-          else
-            btn.countText:SetText("")
-          end
-        end
-      else
-        btn.cooldown:Clear()
-        if btn.icon and btn.icon.SetDesaturated then
-          btn.icon:SetDesaturated(false)
-        end
-        if btn.disabledTint then
-          btn.disabledTint:Hide()
-        end
-        if btn.cooldownText then btn.cooldownText:SetText("") end
-        if btn.countText then btn.countText:SetText("") end
       end
     end
   end
