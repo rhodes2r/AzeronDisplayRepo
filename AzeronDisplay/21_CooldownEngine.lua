@@ -87,6 +87,32 @@ function CooldownEngine.Init(deps)
   end
 end
 
+local function getSpellChargeInfo(spellID, SafeNumber, NormalizeCooldownPair)
+  local sid = SafeNumber(spellID, 0)
+  if sid <= 0 or not C_Spell or not C_Spell.GetSpellCharges then
+    return nil, nil, 0, 0
+  end
+  local ok, a, b, c, d = pcall(C_Spell.GetSpellCharges, sid)
+  if not ok then
+    return nil, nil, 0, 0
+  end
+
+  if type(a) == "table" then
+    local cur = SafeNumber(a.currentCharges or a.charges, nil)
+    local mx = SafeNumber(a.maxCharges, nil)
+    local cs, cd = NormalizeCooldownPair(
+      SafeNumber(a.cooldownStartTime or a.chargeStartTime, 0),
+      SafeNumber(a.cooldownDuration or a.chargeDuration, 0)
+    )
+    return cur, mx, cs, cd
+  end
+
+  local cur = SafeNumber(a, nil)
+  local mx = SafeNumber(b, nil)
+  local cs, cd = NormalizeCooldownPair(SafeNumber(c, 0), SafeNumber(d, 0))
+  return cur, mx, cs, cd
+end
+
 function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
   if not btn or not bd then
     clearButtonCooldownVisuals(btn)
@@ -118,6 +144,7 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
   local cdRawStart, cdRawDur = nil, nil
   local charges, maxCharges = nil, nil
   local chargeStart, chargeDur = 0, 0
+  local chargeStartRaw, chargeDurRaw = nil, nil
   local stackCount = nil
   local hasAction = false
   local slot = GetLiveActionSlotFromBinding and GetLiveActionSlotFromBinding(bd) or nil
@@ -164,6 +191,14 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
       end
     end
     bd._resolvedSpellID = resolvedSpellID
+    local chargeContextKey = tostring(resolvedSpellID or 0) .. ":" .. tostring(slot or 0)
+    if bd._chargeContextKey ~= chargeContextKey then
+      bd._chargeContextKey = chargeContextKey
+      bd._chargeCache = nil
+      bd._chargeShownCache = nil
+      bd._isChargeSpell = nil
+      bd._chargeTypeSeenAt = nil
+    end
 
     local function probeShown(s, d)
       if not scratchCooldown then return false end
@@ -253,37 +288,109 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
       local okc, c, mc, cs, cd = pcall(GetActionCharges, slot)
       if okc then
         charges, maxCharges = c, mc
+        chargeStartRaw, chargeDurRaw = cs, cd
         chargeStart, chargeDur = NormalizeCooldownPair(cs, cd)
       end
     end
+
+    -- CooldownCompanion-style priority: spell-level charge APIs are authoritative
+    -- for spell recharge behavior. Prefer them whenever they indicate maxCharges > 1.
+    local safeCharges = SafeNumber(charges, nil)
+    local safeMaxCharges = SafeNumber(maxCharges, nil)
+    if resolvedSpellID and resolvedSpellID > 0 then
+      local sc, sm, ss, sd = getSpellChargeInfo(resolvedSpellID, SafeNumber, NormalizeCooldownPair)
+      if sm and sm > 1 then
+        charges, maxCharges = sc, sm
+        chargeStartRaw, chargeDurRaw = ss, sd
+        chargeStart, chargeDur = ss, sd
+        safeCharges, safeMaxCharges = SafeNumber(charges, nil), SafeNumber(maxCharges, nil)
+      elseif (safeMaxCharges == nil or safeMaxCharges <= 0) and sm and sm > 0 then
+        charges, maxCharges = sc, sm
+        chargeStartRaw, chargeDurRaw = ss, sd
+        chargeStart, chargeDur = ss, sd
+        safeCharges, safeMaxCharges = SafeNumber(charges, nil), SafeNumber(maxCharges, nil)
+      end
+    end
+
+    -- Keep metadata for this exact context, but do not reuse stale values for display.
+    if safeMaxCharges and safeMaxCharges > 0 then
+      bd._chargeCache = {
+        charges = safeCharges,
+        maxCharges = safeMaxCharges,
+        chargeStart = SafeNumber(chargeStart, 0),
+        chargeDur = SafeNumber(chargeDur, 0),
+        chargeStartRaw = chargeStartRaw,
+        chargeDurRaw = chargeDurRaw,
+        seenAt = now,
+        contextKey = chargeContextKey,
+      }
+      bd._isChargeSpell = (safeMaxCharges > 1)
+      bd._chargeTypeSeenAt = now
+    else
+      bd._chargeCache = nil
+    end
+
     if GetActionCount then
       local okn, n = pcall(GetActionCount, slot)
       if okn then stackCount = n end
     end
 
-    local safeCharges = SafeNumber(charges, nil)
-    local safeMaxCharges = SafeNumber(maxCharges, nil)
+    safeCharges = SafeNumber(charges, nil)
+    safeMaxCharges = SafeNumber(maxCharges, nil)
     local safeCStart = SafeNumber(chargeStart, 0)
     local safeCDur = SafeNumber(chargeDur, 0)
     local chargeShown = false
     local chargeRawStart, chargeRawDur = nil, nil
     if safeCharges and safeMaxCharges and safeMaxCharges > 0 and safeCharges < safeMaxCharges then
-      local cShown, cs, cd = probeShown(safeCStart, safeCDur)
+      local probeStart = (chargeStartRaw ~= nil) and chargeStartRaw or safeCStart
+      local probeDur = (chargeDurRaw ~= nil) and chargeDurRaw or safeCDur
+      local cShown, cs, cd = probeShown(probeStart, probeDur)
       if cShown then
         chargeShown = true
         safeCStart, safeCDur = cs, cd
-        chargeRawStart, chargeRawDur = chargeStart, chargeDur
+        chargeRawStart = (chargeStartRaw ~= nil) and chargeStartRaw or chargeStart
+        chargeRawDur = (chargeDurRaw ~= nil) and chargeDurRaw or chargeDur
+        bd._chargeShownCache = {
+          start = safeCStart,
+          dur = safeCDur,
+          rawStart = chargeRawStart,
+          rawDur = chargeRawDur,
+          seenAt = now,
+        }
       end
     end
 
     local mainRemain = (SafeNumber(mainStart, nil) and SafeNumber(mainDur, nil)) and math.max(0, (mainStart + mainDur) - now) or 0
     local chargeRemain = (SafeNumber(safeCStart, nil) and SafeNumber(safeCDur, nil)) and math.max(0, (safeCStart + safeCDur) - now) or 0
-    if chargeShown and (not mainShown or chargeRemain > mainRemain) then
-      cdStart, cdDur = safeCStart, safeCDur
-      cdRawStart, cdRawDur = chargeRawStart, chargeRawDur
-    elseif mainShown then
-      cdStart, cdDur = mainStart, mainDur
-      cdRawStart, cdRawDur = mainRawStart, mainRawDur
+    if safeMaxCharges ~= nil then
+      bd._isChargeSpell = (safeMaxCharges > 1)
+      bd._chargeTypeSeenAt = now
+    elseif bd._isChargeSpell ~= nil then
+      local age = now - SafeNumber(bd._chargeTypeSeenAt, 0)
+      if age > 1.5 then
+        bd._isChargeSpell = nil
+      end
+    end
+
+    local hasChargeSystem = (bd._isChargeSpell == true)
+    if hasChargeSystem then
+      -- CooldownCompanion parity: for true charge spells, show recharge cooldown
+      -- only while recharging. Do not fall back to main cooldown/GCD pulses.
+      if chargeShown then
+        cdStart, cdDur = safeCStart, safeCDur
+        cdRawStart, cdRawDur = chargeRawStart, chargeRawDur
+      else
+        cdStart, cdDur = 0, 0
+        cdRawStart, cdRawDur = nil, nil
+      end
+    else
+      if chargeShown and (not mainShown or chargeRemain > mainRemain) then
+        cdStart, cdDur = safeCStart, safeCDur
+        cdRawStart, cdRawDur = chargeRawStart, chargeRawDur
+      elseif mainShown then
+        cdStart, cdDur = mainStart, mainDur
+        cdRawStart, cdRawDur = mainRawStart, mainRawDur
+      end
     end
   end
 
@@ -369,11 +476,32 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
     local c = safeCharges
     local mc = safeMaxCharges
     local sc = safeStackCount
+    local shown = false
+
+    -- Primary: numeric charges when available.
     if c and mc and mc > 1 then
       btn.countText:SetText(tostring(c))
-    elseif sc and sc > 1 then
+      shown = true
+    end
+
+    -- CooldownCompanion-style fallback: spell display count can be available
+    -- even when charge numbers are secret/unreadable.
+    if (not shown) and bd and bd._resolvedSpellID and C_Spell and C_Spell.GetSpellDisplayCount then
+      local okDisp, disp = pcall(C_Spell.GetSpellDisplayCount, bd._resolvedSpellID)
+      if okDisp and disp ~= nil then
+        -- Secret-safe pass-through: do not compare/format in Lua.
+        btn.countText:SetText(disp)
+        shown = true
+      end
+    end
+
+    -- Fallback stack count for non-charge actions/items.
+    if (not shown) and sc and sc > 1 then
       btn.countText:SetText(tostring(sc))
-    else
+      shown = true
+    end
+
+    if not shown then
       btn.countText:SetText("")
     end
   end
