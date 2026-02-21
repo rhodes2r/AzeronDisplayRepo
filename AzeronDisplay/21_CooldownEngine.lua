@@ -15,6 +15,13 @@ local function clearButtonCooldownVisuals(btn)
   if not btn then return end
   if btn.cooldown then
     btn.cooldown:Clear()
+    if btn.cooldown.SetHideCountdownNumbers then
+      btn.cooldown:SetHideCountdownNumbers(true)
+    end
+  end
+  btn._cdTextHidden = true
+  if btn._cdTextRegion and btn._cdTextRegion.SetTextColor then
+    btn._cdTextRegion:SetTextColor(0, 0, 0, 0)
   end
   btn._lastCdStart, btn._lastCdDur = nil, nil
   if btn.icon and btn.icon.SetDesaturated then
@@ -28,6 +35,22 @@ local function clearButtonCooldownVisuals(btn)
   end
   if btn.countText then
     btn.countText:SetText("")
+  end
+end
+
+local function setNativeCooldownText(btn, show)
+  if not btn or not btn.cooldown then return end
+  local wantHide = not show
+  if btn.cooldown.SetHideCountdownNumbers and btn._cdTextHidden ~= wantHide then
+    btn.cooldown:SetHideCountdownNumbers(wantHide)
+    btn._cdTextHidden = wantHide
+  end
+  if btn._cdTextRegion and btn._cdTextRegion.SetTextColor then
+    if show then
+      btn._cdTextRegion:SetTextColor(1, 0.95, 0.6, 1)
+    else
+      btn._cdTextRegion:SetTextColor(0, 0, 0, 0)
+    end
   end
 end
 
@@ -291,17 +314,11 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
         btn.disabledTint:Hide()
       end
     end
-    if btn.cooldownText then
-      if remain >= 60 then
-        btn.cooldownText:SetText(tostring(math.ceil(remain / 60)) .. "M")
-      elseif remain > 0 then
-        btn.cooldownText:SetText(tostring(math.ceil(remain)))
-      else
-        btn.cooldownText:SetText("")
-      end
-    end
+    setNativeCooldownText(btn, true)
+    if btn.cooldownText then btn.cooldownText:SetText("") end
   else
     btn.cooldown:Clear()
+    setNativeCooldownText(btn, false)
     btn._lastCdStart, btn._lastCdDur = nil, nil
     if btn.icon and btn.icon.SetDesaturated then
       btn.icon:SetDesaturated(false)

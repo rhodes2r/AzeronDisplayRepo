@@ -1054,8 +1054,26 @@ local function CreateKeyButton(info, parent)
   btn.cooldown:SetPoint("CENTER")
   btn.cooldown:SetDrawEdge(true)
   if btn.cooldown.SetHideCountdownNumbers then
-    -- Use addon-controlled numeric text only; Blizzard countdown text can desync.
+    -- CooldownEngine toggles this at runtime.
     btn.cooldown:SetHideCountdownNumbers(true)
+  end
+  do
+    local cdRegion = nil
+    local regions = { btn.cooldown:GetRegions() }
+    for _, r in ipairs(regions) do
+      if r and r.GetObjectType and r:GetObjectType() == "FontString" then
+        cdRegion = r
+        break
+      end
+    end
+    if cdRegion and cdRegion.SetFont then
+      cdRegion:SetFont(STANDARD_TEXT_FONT, 14, "OUTLINE")
+      cdRegion:SetTextColor(1, 0.95, 0.6, 1)
+      cdRegion:ClearAllPoints()
+      cdRegion:SetPoint("CENTER", 0, 0)
+      btn._cdTextRegion = cdRegion
+      btn._cdTextHidden = true
+    end
   end
 
   -- Text overlay above cooldown swipe so numbers remain readable.
