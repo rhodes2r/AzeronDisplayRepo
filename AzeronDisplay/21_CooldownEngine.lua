@@ -54,6 +54,29 @@ local function setNativeCooldownText(btn, show)
   end
 end
 
+local function isLikelyGCDCandidate(startTime, duration, isOnGCD, gcdStart, gcdDuration)
+  local s = tonumber(tostring(startTime)) or 0
+  local d = tonumber(tostring(duration)) or 0
+  if s <= 0 or d <= 0 then return false end
+  if not isOnGCD then return false end
+
+  -- Generic GCD window.
+  if d <= 1.7 then
+    return true
+  end
+
+  -- If we have explicit GCD timing, match against it.
+  local gs = tonumber(tostring(gcdStart)) or 0
+  local gd = tonumber(tostring(gcdDuration)) or 0
+  if gs > 0 and gd > 0 then
+    if math.abs(s - gs) <= 0.15 and math.abs(d - gd) <= 0.20 then
+      return true
+    end
+  end
+
+  return false
+end
+
 function CooldownEngine.Init(deps)
   D = deps or {}
   if not scratchCooldown and CreateFrame then
@@ -166,16 +189,29 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
 
     local mainShown, mainStart, mainDur = false, 0, 0
     local mainRawStart, mainRawDur = nil, nil
+    local spellIsOnGCD = false
+    local gcdStart, gcdDur = 0, 0
     do
+      -- Capture current GCD timing once per tick.
+      if C_Spell and C_Spell.GetSpellCooldown then
+        local gok, ginfo = pcall(C_Spell.GetSpellCooldown, 61304)
+        if gok and ginfo then
+          gcdStart, gcdDur = NormalizeCooldownPair(SafeNumber(ginfo.startTime, 0), SafeNumber(ginfo.duration, 0))
+        end
+      end
+
       -- Prefer direct spell cooldown path (CooldownCompanion-style).
       if resolvedSpellID > 0 and C_Spell and C_Spell.GetSpellCooldown then
         local ok, info = pcall(C_Spell.GetSpellCooldown, resolvedSpellID)
         if ok and info then
+          spellIsOnGCD = (tostring(info.isOnGCD or "false") == "true")
           local mShown, ms, md, msNum, mdNum = probeShown(info.startTime, info.duration)
           if mShown then
-            local isOnGCD = tostring(info.isOnGCD or "false")
-            local notOnlyGCD = (isOnGCD ~= "true")
+            local notOnlyGCD = not spellIsOnGCD
             if mdNum and mdNum > 0 and mdNum <= 1.6 then
+              notOnlyGCD = false
+            end
+            if notOnlyGCD and isLikelyGCDCandidate(ms, md, spellIsOnGCD, gcdStart, gcdDur) then
               notOnlyGCD = false
             end
             if notOnlyGCD then
@@ -188,7 +224,7 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
       if (not mainShown) and GetWoWButtonCooldown then
         local ws, wd = GetWoWButtonCooldown(bd)
         local mShown, ms, md = probeShown(ws, wd)
-        if mShown then
+        if mShown and not isLikelyGCDCandidate(ms, md, spellIsOnGCD, gcdStart, gcdDur) then
           mainShown, mainStart, mainDur = true, ms, md
           mainRawStart, mainRawDur = ws, wd
         end
@@ -197,7 +233,7 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
         local ok, s, d = pcall(GetActionCooldown, slot)
         if ok then
           local mShown, ms, md = probeShown(s, d)
-          if mShown then
+          if mShown and not isLikelyGCDCandidate(ms, md, spellIsOnGCD, gcdStart, gcdDur) then
             mainShown, mainStart, mainDur = true, ms, md
             mainRawStart, mainRawDur = s, d
           end
@@ -206,7 +242,7 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
       if (not mainShown) and GetSpellCooldownFromActionSlot then
         local ss, sd = GetSpellCooldownFromActionSlot(slot, resolvedSpellID)
         local mShown, ms, md = probeShown(ss, sd)
-        if mShown then
+        if mShown and not isLikelyGCDCandidate(ms, md, spellIsOnGCD, gcdStart, gcdDur) then
           mainShown, mainStart, mainDur = true, ms, md
           mainRawStart, mainRawDur = ss, sd
         end
