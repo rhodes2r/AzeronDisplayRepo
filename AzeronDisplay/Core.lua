@@ -50,6 +50,7 @@ local editMode = false
 local buttons = {}
 local sectionFrames = {}
 local cooldownLocks = {}
+local cddiffTicker = nil
 
 -- Button size (fixed), spacing (configurable, default 1)
 local BTN_SIZE = 42
@@ -2203,6 +2204,7 @@ NS.api.HandleSlashCommand = function(msg)
     print("  /azeron keystate <key> — Direct WoW key->action button state (single source)")
     print("  /azeron cddebug [key] — Dump cooldown/charge state (optional key filter)")
     print("  /azeron cdbybutton <ActionBarButtonName> — Raw CooldownFrame test (macro-equivalent)")
+    print("  /azeron cddiff <key> <seconds> — Per-second Azeron vs WoW cooldown trace")
     print("  /azeron procdebug — Show active rotation recommendations")
     print("  /azeron procsource — Dump source WoW glow frame style info")
     print("  Right-click any button to change its base key.")
@@ -2807,6 +2809,171 @@ NS.api.HandleSlashCommand = function(msg)
       .. " inRange=" .. tostring(inRange)
       .. " icon=" .. iconMark
     )
+
+  elseif cmd == "cddiff" then
+    local keyArg, secArg = rest:match("^%s*(%S+)%s*(%S*)%s*$")
+    if not keyArg or keyArg == "" then
+      print("Usage: /azeron cddiff <key> <seconds>")
+      return
+    end
+    local filter = string.upper(tostring(keyArg))
+    local duration = ClampNumber(tonumber(secArg or ""), 1, 60, 10)
+
+    local targetBtn = nil
+    for _, btn in ipairs(buttons) do
+      local baseKey = string.upper(tostring(GetBaseKey(btn.keyID) or ""))
+      local keyID = string.upper(tostring(btn.keyID or ""))
+      if baseKey == filter or keyID == filter then
+        targetBtn = btn
+        break
+      end
+    end
+    if not targetBtn then
+      print(ADDON_NAME .. ": cddiff key '" .. filter .. "' not found in Azeron layout")
+      return
+    end
+
+    if cddiffTicker and cddiffTicker.Cancel then
+      pcall(cddiffTicker.Cancel, cddiffTicker)
+      cddiffTicker = nil
+    end
+
+    local tick = 0
+    print(ADDON_NAME .. ": cddiff start key=" .. tostring(targetBtn.keyID) .. " base=" .. tostring(GetBaseKey(targetBtn.keyID)) .. " duration=" .. tostring(duration) .. "s")
+    cddiffTicker = C_Timer.NewTicker(1, function()
+      tick = tick + 1
+      local now = GetTime and GetTime() or 0
+      local ms = currentModifierState or "NONE"
+      local bd = targetBtn.bindings and (targetBtn.bindings[ms] or targetBtn.bindings["NONE"]) or nil
+      if not bd then
+        print(ADDON_NAME .. ": cddiff t=" .. tostring(tick) .. " no-binding")
+        if tick >= duration and cddiffTicker and cddiffTicker.Cancel then pcall(cddiffTicker.Cancel, cddiffTicker); cddiffTicker = nil end
+        return
+      end
+
+      local baseKey = GetBaseKey(targetBtn.keyID)
+      local modKey = (ms == "NONE") and nil or ms
+      local dn, iconNow, slotNow, snNow, wowFrameNow = GetBindingInfo(baseKey, modKey)
+      if wowFrameNow then bd.wowFrame = wowFrameNow end
+      if slotNow then bd.actionSlot = slotNow end
+
+      local liveSlot = GetLiveActionSlotFromBinding({
+        actionSlot = slotNow or bd.actionSlot,
+        wowFrame = wowFrameNow or bd.wowFrame,
+        spellName = snNow or bd.spellName,
+      })
+      liveSlot = SafeNumber(liveSlot, nil)
+
+      local actionType, actionID = nil, nil
+      if liveSlot and GetActionInfo then
+        local okAI, at, aid = pcall(GetActionInfo, liveSlot)
+        if okAI then actionType, actionID = at, aid end
+      end
+
+      local resolvedSpellID = 0
+      if actionType == "spell" then
+        resolvedSpellID = SafeNumber(actionID, 0)
+      end
+      if resolvedSpellID <= 0 and liveSlot then
+        local ids = GetActionSpellCandidates(liveSlot) or {}
+        resolvedSpellID = SafeNumber(ids[1], 0)
+      end
+
+      local wowShown, wowRemain = false, 0
+      local wf = wowFrameNow or bd.wowFrame
+      if wf then
+        local cdf = wf.cooldown or wf.Cooldown
+        if (not cdf) and wf.GetName then
+          local fn = wf:GetName() or ""
+          cdf = _G[fn .. "Cooldown"] or _G[fn .. "SpellCooldown"]
+        end
+        if cdf and cdf.IsShown then
+          wowShown = cdf:IsShown() and true or false
+        end
+        if cdf and cdf.GetCooldownTimes then
+          local okCT, sMS, dMS = pcall(cdf.GetCooldownTimes, cdf)
+          if okCT then
+            local s = SafeNumber(sMS, 0); local d = SafeNumber(dMS, 0)
+            if s > 100000 then s = s / 1000 end
+            if d > 100000 then d = d / 1000 end
+            if s > 0 and d > 0 then
+              wowRemain = math.max(0, (s + d) - now)
+            end
+          end
+        end
+      end
+
+      local spellShown, spellRemain, isOnGCD = false, 0, false
+      local spellStart, spellDur = 0, 0
+      if resolvedSpellID > 0 and C_Spell and C_Spell.GetSpellCooldown then
+        local okSC, info = pcall(C_Spell.GetSpellCooldown, resolvedSpellID)
+        if okSC and info then
+          isOnGCD = (tostring(info.isOnGCD or "false") == "true")
+          spellStart, spellDur = NormalizeCooldownPair(SafeNumber(info.startTime, 0), SafeNumber(info.duration, 0))
+          spellShown = (spellStart > 0 and spellDur > 0)
+          if spellShown then
+            spellRemain = math.max(0, (spellStart + spellDur) - now)
+          end
+        end
+      end
+
+      local chCur, chMax, chRemain = nil, nil, 0
+      if resolvedSpellID > 0 and C_Spell and C_Spell.GetSpellCharges then
+        local okCH, a, b, c, d = pcall(C_Spell.GetSpellCharges, resolvedSpellID)
+        if okCH then
+          if type(a) == "table" then
+            chCur = SafeNumber(a.currentCharges or a.charges, nil)
+            chMax = SafeNumber(a.maxCharges, nil)
+            local cs, cd = NormalizeCooldownPair(SafeNumber(a.cooldownStartTime or a.chargeStartTime, 0), SafeNumber(a.cooldownDuration or a.chargeDuration, 0))
+            if cs > 0 and cd > 0 then chRemain = math.max(0, (cs + cd) - now) end
+          else
+            chCur = SafeNumber(a, nil)
+            chMax = SafeNumber(b, nil)
+            local cs, cd = NormalizeCooldownPair(SafeNumber(c, 0), SafeNumber(d, 0))
+            if cs > 0 and cd > 0 then chRemain = math.max(0, (cs + cd) - now) end
+          end
+        end
+      end
+
+      local azShown, azRemain = false, 0
+      if targetBtn.cooldown and targetBtn.cooldown.IsShown then
+        azShown = targetBtn.cooldown:IsShown() and true or false
+      end
+      if targetBtn.cooldown and targetBtn.cooldown.GetCooldownTimes then
+        local okAT, sMS, dMS = pcall(targetBtn.cooldown.GetCooldownTimes, targetBtn.cooldown)
+        if okAT then
+          local s = SafeNumber(sMS, 0); local d = SafeNumber(dMS, 0)
+          if s > 100000 then s = s / 1000 end
+          if d > 100000 then d = d / 1000 end
+          if s > 0 and d > 0 then
+            azRemain = math.max(0, (s + d) - now)
+          end
+        end
+      end
+
+      print(
+        ADDON_NAME .. ": cddiff t=" .. tostring(tick)
+        .. " key=" .. tostring(targetBtn.keyID)
+        .. " ms=" .. tostring(ms)
+        .. " slot=" .. tostring(liveSlot or "-")
+        .. " action=" .. tostring(actionType or "-") .. "/" .. tostring(actionID or "-")
+        .. " sid=" .. tostring(resolvedSpellID or 0)
+        .. " wow=" .. tostring(wowShown) .. "/" .. string.format("%.1f", wowRemain)
+        .. " spell=" .. tostring(spellShown) .. "/" .. string.format("%.1f", spellRemain)
+        .. " gcd=" .. tostring(isOnGCD)
+        .. " ch=" .. tostring(chCur) .. "/" .. tostring(chMax) .. " chRem=" .. string.format("%.1f", chRemain)
+        .. " az=" .. tostring(azShown) .. "/" .. string.format("%.1f", azRemain)
+        .. " azCharge=" .. tostring(bd._isChargeSpell)
+        .. " azRech=" .. tostring(bd._chargeRecharging)
+        .. " azUseDur=" .. tostring(bd._useChargeDurationObj)
+      )
+
+      if tick >= duration then
+        if cddiffTicker and cddiffTicker.Cancel then pcall(cddiffTicker.Cancel, cddiffTicker) end
+        cddiffTicker = nil
+        print(ADDON_NAME .. ": cddiff done key=" .. tostring(targetBtn.keyID))
+      end
+    end)
 
   elseif cmd == "procdebug" then
     -- Scan our Azeron buttons for active proc glow (AssistedCombatHighlightFrame)

@@ -127,7 +127,6 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
   local GetWoWButtonCooldown = D.GetWoWButtonCooldown
   local GetActionSpellCandidates = D.GetActionSpellCandidates
   local GetSpellCooldownFromActionSlot = D.GetSpellCooldownFromActionSlot
-  local CooldownModule = D.CooldownModule
 
   local ms = modifierState or "NONE"
   local baseKey = GetBaseKey and GetBaseKey(btn.keyID) or btn.keyID
@@ -191,15 +190,6 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
       end
     end
     bd._resolvedSpellID = resolvedSpellID
-    local chargeContextKey = tostring(resolvedSpellID or 0) .. ":" .. tostring(slot or 0)
-    if bd._chargeContextKey ~= chargeContextKey then
-      bd._chargeContextKey = chargeContextKey
-      bd._chargeCache = nil
-      bd._chargeShownCache = nil
-      bd._isChargeSpell = nil
-      bd._chargeTypeSeenAt = nil
-    end
-
     local function probeShown(s, d)
       if not scratchCooldown then return false end
       local psNum = SafeNumber(s, nil)
@@ -226,12 +216,34 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
     local mainRawStart, mainRawDur = nil, nil
     local spellIsOnGCD = false
     local gcdStart, gcdDur = 0, 0
+    local gcdActive = false
     do
       -- Capture current GCD timing once per tick.
       if C_Spell and C_Spell.GetSpellCooldown then
         local gok, ginfo = pcall(C_Spell.GetSpellCooldown, 61304)
         if gok and ginfo then
           gcdStart, gcdDur = NormalizeCooldownPair(SafeNumber(ginfo.startTime, 0), SafeNumber(ginfo.duration, 0))
+          if C_Spell.GetSpellCooldownDuration then
+            local okDur, gcdDuration = pcall(C_Spell.GetSpellCooldownDuration, 61304)
+            if okDur and gcdDuration then
+              local canUseDuration = true
+              if gcdDuration.HasSecretValues then
+                local okSec, sec = pcall(gcdDuration.HasSecretValues, gcdDuration)
+                canUseDuration = okSec and (tostring(sec) == "false")
+              end
+              if canUseDuration then
+                scratchCooldown:Hide()
+                local okSet = pcall(scratchCooldown.SetCooldownFromDurationObject, scratchCooldown, gcdDuration)
+                if okSet then
+                  gcdActive = scratchCooldown:IsShown() and true or false
+                end
+                scratchCooldown:Hide()
+              else
+                local gShown = probeShown(ginfo.startTime, ginfo.duration)
+                gcdActive = gShown and true or false
+              end
+            end
+          end
         end
       end
 
@@ -242,14 +254,17 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
           spellIsOnGCD = (tostring(info.isOnGCD or "false") == "true")
           local mShown, ms, md, msNum, mdNum = probeShown(info.startTime, info.duration)
           if mShown then
-            local notOnlyGCD = not spellIsOnGCD
-            if mdNum and mdNum > 0 and mdNum <= 1.6 then
-              notOnlyGCD = false
+            local isGCDOnly = false
+            if msNum and mdNum and gcdStart > 0 and gcdDur > 0 then
+              isGCDOnly = (math.abs(msNum - gcdStart) <= 0.001 and math.abs(mdNum - gcdDur) <= 0.001)
             end
-            if notOnlyGCD and isLikelyGCDCandidate(ms, md, spellIsOnGCD, gcdStart, gcdDur) then
-              notOnlyGCD = false
+            if not isGCDOnly then
+              isGCDOnly = spellIsOnGCD and gcdActive
             end
-            if notOnlyGCD then
+            if not isGCDOnly and isLikelyGCDCandidate(ms, md, spellIsOnGCD, gcdStart, gcdDur) then
+              isGCDOnly = true
+            end
+            if not isGCDOnly then
               mainShown, mainStart, mainDur = true, ms, md
               mainRawStart, mainRawDur = info.startTime, info.duration
             end
@@ -312,22 +327,10 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
       end
     end
 
-    -- Keep metadata for this exact context, but do not reuse stale values for display.
     if safeMaxCharges and safeMaxCharges > 0 then
-      bd._chargeCache = {
-        charges = safeCharges,
-        maxCharges = safeMaxCharges,
-        chargeStart = SafeNumber(chargeStart, 0),
-        chargeDur = SafeNumber(chargeDur, 0),
-        chargeStartRaw = chargeStartRaw,
-        chargeDurRaw = chargeDurRaw,
-        seenAt = now,
-        contextKey = chargeContextKey,
-      }
       bd._isChargeSpell = (safeMaxCharges > 1)
-      bd._chargeTypeSeenAt = now
     else
-      bd._chargeCache = nil
+      bd._isChargeSpell = false
     end
 
     if GetActionCount then
@@ -350,30 +353,16 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
         safeCStart, safeCDur = cs, cd
         chargeRawStart = (chargeStartRaw ~= nil) and chargeStartRaw or chargeStart
         chargeRawDur = (chargeDurRaw ~= nil) and chargeDurRaw or chargeDur
-        bd._chargeShownCache = {
-          start = safeCStart,
-          dur = safeCDur,
-          rawStart = chargeRawStart,
-          rawDur = chargeRawDur,
-          seenAt = now,
-        }
       end
     end
 
     local mainRemain = (SafeNumber(mainStart, nil) and SafeNumber(mainDur, nil)) and math.max(0, (mainStart + mainDur) - now) or 0
     local chargeRemain = (SafeNumber(safeCStart, nil) and SafeNumber(safeCDur, nil)) and math.max(0, (safeCStart + safeCDur) - now) or 0
-    if safeMaxCharges ~= nil then
-      bd._isChargeSpell = (safeMaxCharges > 1)
-      bd._chargeTypeSeenAt = now
-    elseif bd._isChargeSpell ~= nil then
-      local age = now - SafeNumber(bd._chargeTypeSeenAt, 0)
-      if age > 1.5 then
-        bd._isChargeSpell = nil
-      end
-    end
 
     local hasChargeSystem = (bd._isChargeSpell == true)
     if hasChargeSystem then
+      local zeroCharge = (safeCharges ~= nil and safeCharges == 0)
+      bd._mainCDShown = zeroCharge and true or false
       -- CooldownCompanion parity: for true charge spells, show recharge cooldown
       -- only while recharging. Do not fall back to main cooldown/GCD pulses.
       if chargeShown then
@@ -407,13 +396,6 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
     safeStart, safeDur = NormalizeCooldownPair(safeStart, safeDur)
   end
 
-  local specCdRemain = 0
-  local specialTextMode = false
-  if CooldownModule and CooldownModule.GetSpecialRemain then
-    specCdRemain = SafeNumber(CooldownModule.GetSpecialRemain(bd, now), 0)
-    specialTextMode = (specCdRemain > 0)
-  end
-
   local safeCharges = SafeNumber(charges, nil)
   local safeMaxCharges = SafeNumber(maxCharges, nil)
   local safeStackCount = SafeNumber(stackCount, nil)
@@ -426,36 +408,22 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
   end
   local remain = (displayStart > 0 and displayDur > 0) and math.max(0, (displayStart + displayDur) - now) or 0
   if hasDisplayCooldown then
-    if specialTextMode then
-      btn.cooldown:Clear()
-      btn._lastCdStart, btn._lastCdDur = nil, nil
+    if cdRawStart ~= nil and cdRawDur ~= nil then
+      btn.cooldown:SetCooldown(cdRawStart, cdRawDur)
     else
-      if cdRawStart ~= nil and cdRawDur ~= nil then
-        btn.cooldown:SetCooldown(cdRawStart, cdRawDur)
-      else
-        local changed = (not btn._lastCdStart)
-          or math.abs((btn._lastCdStart or 0) - displayStart) > 0.15
-          or math.abs((btn._lastCdDur or 0) - displayDur) > 0.15
-        if changed then
-          btn.cooldown:SetCooldown(displayStart, displayDur)
-          btn._lastCdStart, btn._lastCdDur = displayStart, displayDur
-        end
+      local changed = (not btn._lastCdStart)
+        or math.abs((btn._lastCdStart or 0) - displayStart) > 0.15
+        or math.abs((btn._lastCdDur or 0) - displayDur) > 0.15
+      if changed then
+        btn.cooldown:SetCooldown(displayStart, displayDur)
+        btn._lastCdStart, btn._lastCdDur = displayStart, displayDur
       end
     end
-    if specialTextMode and remain > 0 then
-      if btn.icon and btn.icon.SetDesaturated then
-        btn.icon:SetDesaturated(true)
-      end
-      if btn.disabledTint then
-        btn.disabledTint:Show()
-      end
-    else
-      if btn.icon and btn.icon.SetDesaturated then
-        btn.icon:SetDesaturated(false)
-      end
-      if btn.disabledTint then
-        btn.disabledTint:Hide()
-      end
+    if btn.icon and btn.icon.SetDesaturated then
+      btn.icon:SetDesaturated(false)
+    end
+    if btn.disabledTint then
+      btn.disabledTint:Hide()
     end
     setNativeCooldownText(btn, true)
     if btn.cooldownText then btn.cooldownText:SetText("") end
