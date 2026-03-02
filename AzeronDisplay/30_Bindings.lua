@@ -43,14 +43,20 @@ end
 
 function Bindings.ResolveWoWBindingFrameAndSlot(bindKey)
   if not bindKey or bindKey == "" then return nil, nil, nil, nil, nil end
-  local abFrame, abSlot, abButton = Bindings.FindActionButtonByKeyLabel(bindKey)
-  if abFrame and abSlot then
-    local rawAB = GetBindingAction and GetBindingAction(bindKey) or ("ACTIONBUTTON" .. tostring(abButton))
-    return rawAB, abFrame, abSlot, 1, abButton
-  end
 
   local raw = GetBindingAction and GetBindingAction(bindKey) or nil
-  if not raw or raw == "" then return nil, nil, nil, nil, nil end
+  local function keyLabelFallback()
+    local abFrame, abSlot, abButton = Bindings.FindActionButtonByKeyLabel(bindKey)
+    if abFrame and abSlot then
+      local rawAB = raw or ("ACTIONBUTTON" .. tostring(abButton))
+      return rawAB, abFrame, abSlot, 1, abButton
+    end
+    return nil, nil, nil, nil, nil
+  end
+
+  if not raw or raw == "" then
+    return keyLabelFallback()
+  end
 
   local an = raw:match("^ACTIONBUTTON(%d+)$")
   if an then
@@ -58,23 +64,29 @@ function Bindings.ResolveWoWBindingFrameAndSlot(bindKey)
     local frame = _G["ActionButton" .. tostring(btnNum)]
     local slot = frame and (frame.action or (frame.GetAttribute and frame:GetAttribute("action"))) or (D.GetRealActionSlot and D.GetRealActionSlot(btnNum) or nil)
     slot = D.SafeNumber and D.SafeNumber(slot, nil) or slot
+    if not slot then
+      return keyLabelFallback()
+    end
     return raw, frame, slot, 1, btnNum
   end
 
   local bn, bt = raw:match("^MULTIACTIONBAR(%d+)BUTTON(%d+)$")
   if bn and bt then
-    local af, as, ab = Bindings.FindActionButtonByKeyLabel(bindKey)
-    if af and as then
-      return raw, af, as, 1, ab
-    end
     local barNum, btnNum = tonumber(bn), tonumber(bt)
     local prefix = D.MULTIBAR_PREFIX and D.MULTIBAR_PREFIX[barNum] or nil
     local frame = prefix and _G[prefix .. tostring(btnNum)] or nil
     local slot = frame and (frame.action or (frame.GetAttribute and frame:GetAttribute("action"))) or (D.GetMultiBarActionSlot and D.GetMultiBarActionSlot(barNum, btnNum) or nil)
     slot = D.SafeNumber and D.SafeNumber(slot, nil) or slot
+    if not slot then
+      return keyLabelFallback()
+    end
     return raw, frame, slot, barNum, btnNum
   end
 
+  local fr, ff, fs, fb, fbtn = keyLabelFallback()
+  if ff and fs then
+    return raw, ff, fs, fb, fbtn
+  end
   return raw, nil, nil, nil, nil
 end
 

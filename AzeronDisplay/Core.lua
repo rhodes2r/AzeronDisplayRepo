@@ -51,6 +51,10 @@ local buttons = {}
 local sectionFrames = {}
 local cooldownLocks = {}
 local cddiffTicker = nil
+local gcdInfoSnapshot = nil
+local gcdStartSnapshot = 0
+local gcdDurSnapshot = 0
+local gcdActiveSnapshot = false
 
 -- Button size (fixed), spacing (configurable, default 1)
 local BTN_SIZE = 42
@@ -65,6 +69,8 @@ local DEFAULT_SETTINGS = {
   keyTextSize = 10,
   keydown = { width = 6, height = 6, alpha = 0.9, z = 5 },
   proc = { width = 6, height = 6, alpha = 1.0, z = 6, anim = 1, style = 1 },
+  procHostileTargetOnly = true,
+  cdmismatchDebug = false,
 }
 
 local PROC_ANIMATIONS = {
@@ -134,6 +140,22 @@ local function NormalizeCooldownPair(startTime, duration)
     d = rawD / 1000
   end
   return s, d
+end
+
+local function RefreshGCDSnapshot()
+  gcdInfoSnapshot = nil
+  gcdStartSnapshot = 0
+  gcdDurSnapshot = 0
+  gcdActiveSnapshot = false
+
+  if C_Spell and C_Spell.GetSpellCooldown then
+    local ok, info = pcall(C_Spell.GetSpellCooldown, 61304)
+    if ok and info then
+      gcdInfoSnapshot = info
+      gcdStartSnapshot, gcdDurSnapshot = NormalizeCooldownPair(SafeNumber(info.startTime, 0), SafeNumber(info.duration, 0))
+      gcdActiveSnapshot = (tostring(info.isOnGCD or "false") == "true")
+    end
+  end
 end
 
 -- Sections: cols/rows — pixel sizes computed at runtime from BTN_STEP
@@ -272,6 +294,8 @@ local function EnsureSettingsDefaults()
 
   if DB.settings.padding == nil then DB.settings.padding = DEFAULT_SETTINGS.padding end
   if DB.settings.keyTextSize == nil then DB.settings.keyTextSize = DEFAULT_SETTINGS.keyTextSize end
+  if DB.settings.procHostileTargetOnly == nil then DB.settings.procHostileTargetOnly = DEFAULT_SETTINGS.procHostileTargetOnly end
+  if DB.settings.cdmismatchDebug == nil then DB.settings.cdmismatchDebug = DEFAULT_SETTINGS.cdmismatchDebug end
 
   DB.settings.keydown = DB.settings.keydown or {}
   DB.settings.keydown.width = ClampNumber(DB.settings.keydown.width, 2, 30, DEFAULT_SETTINGS.keydown.width)
@@ -739,9 +763,21 @@ if CooldownEngineModule and CooldownEngineModule.Init then
     GetWoWButtonCooldown = GetWoWButtonCooldown,
     IsWoWButtonCooldownShown = IsWoWButtonCooldownShown,
     GetWoWButtonIconTexture = GetWoWButtonIconTexture,
+    GetGCDState = function()
+      return {
+        info = gcdInfoSnapshot,
+        start = gcdStartSnapshot,
+        duration = gcdDurSnapshot,
+        active = gcdActiveSnapshot,
+      }
+    end,
     CooldownModule = CooldownModule,
     SPECIAL_COOLDOWN_SPELLS = SPECIAL_COOLDOWN_SPELLS,
     cooldownLocks = cooldownLocks,
+    Print = print,
+    IsCDMismatchDebugEnabled = function()
+      return DB and DB.settings and DB.settings.cdmismatchDebug == true
+    end,
   })
 end
 
@@ -1707,10 +1743,11 @@ end
 -- Update: cooldown spirals
 ---------------------------------------------------------------------------
 UpdateCooldowns = function()
+  RefreshGCDSnapshot()
   local ms = currentModifierState or "NONE"
   for _, btn in ipairs(buttons) do
     if btn and btn.cooldown and btn.bindings then
-      local bd = btn.bindings[ms]
+      local bd = btn.bindings[ms] or btn.bindings["NONE"]
       if bd then
         if CooldownEngineModule and CooldownEngineModule.UpdateButtonCooldown then
           CooldownEngineModule.UpdateButtonCooldown(btn, bd, ms)
@@ -1738,12 +1775,25 @@ end
 -- Update: usability coloring, range, active highlight, proc glow
 ---------------------------------------------------------------------------
 UpdateUsability = function()
+  local function HasHostileTarget()
+    if UnitExists and UnitCanAttack then
+      if UnitExists("target") then
+        return UnitCanAttack("player", "target") and true or false
+      end
+      if UnitExists("softenemy") then
+        return UnitCanAttack("player", "softenemy") and true or false
+      end
+    end
+    return false
+  end
   IndicatorsModule.UpdateUsability({
     currentModifierState = currentModifierState,
     buttons = buttons,
     CollectGlowingWoWSources = CollectGlowingWoWSources,
     GetLiveActionSlotFromBinding = GetLiveActionSlotFromBinding,
     IsWoWButtonPressed = IsWoWButtonPressed,
+    HasHostileTarget = HasHostileTarget,
+    procHostileTargetOnly = DB and DB.settings and DB.settings.procHostileTargetOnly ~= false,
     ApplyProcSourceVisual = ApplyProcSourceVisual,
     EnsureProcAnimation = EnsureProcAnimation,
     StopProcAnimation = StopProcAnimation,
@@ -2036,6 +2086,15 @@ local function CreateConfigFrame()
     -876)
   configWidgets[#configWidgets + 1] = refreshProcAnim
 
+  local _, refreshProcHostileOnly = CreateConfigCheckbox(content, "Proc: Hostile Target Only",
+    function() return DB and DB.settings and DB.settings.procHostileTargetOnly ~= false end,
+    function(v)
+      DB.settings.procHostileTargetOnly = v and true or false
+      if UpdateUsability then UpdateUsability() end
+    end,
+    20, -926)
+  configWidgets[#configWidgets + 1] = refreshProcHostileOnly
+
   configFrame:SetScript("OnShow", function()
     for _, fn in ipairs(configWidgets) do fn() end
   end)
@@ -2205,6 +2264,8 @@ NS.api.HandleSlashCommand = function(msg)
     print("  /azeron cddebug [key] — Dump cooldown/charge state (optional key filter)")
     print("  /azeron cdbybutton <ActionBarButtonName> — Raw CooldownFrame test (macro-equivalent)")
     print("  /azeron cddiff <key> <seconds> — Per-second Azeron vs WoW cooldown trace")
+    print("  /azeron cdmismatch <on|off> — Toggle cooldown mismatch debug logging")
+    print("  /azeron prochostile <on|off> — Show proc only when hostile target exists")
     print("  /azeron procdebug — Show active rotation recommendations")
     print("  /azeron procsource — Dump source WoW glow frame style info")
     print("  Right-click any button to change its base key.")
@@ -2974,6 +3035,32 @@ NS.api.HandleSlashCommand = function(msg)
         print(ADDON_NAME .. ": cddiff done key=" .. tostring(targetBtn.keyID))
       end
     end)
+
+  elseif cmd == "cdmismatch" then
+    local arg = tostring(rest or ""):lower():match("^%s*(.-)%s*$")
+    if arg == "on" then
+      DB.settings.cdmismatchDebug = true
+      print(ADDON_NAME .. ": cdmismatch debug ON")
+    elseif arg == "off" then
+      DB.settings.cdmismatchDebug = false
+      print(ADDON_NAME .. ": cdmismatch debug OFF")
+    else
+      print("Usage: /azeron cdmismatch <on|off> (current: " .. tostring(DB.settings.cdmismatchDebug == true) .. ")")
+    end
+
+  elseif cmd == "prochostile" then
+    local arg = tostring(rest or ""):lower():match("^%s*(.-)%s*$")
+    if arg == "on" then
+      DB.settings.procHostileTargetOnly = true
+      print(ADDON_NAME .. ": proc hostile-target-only ON")
+      UpdateUsability()
+    elseif arg == "off" then
+      DB.settings.procHostileTargetOnly = false
+      print(ADDON_NAME .. ": proc hostile-target-only OFF")
+      UpdateUsability()
+    else
+      print("Usage: /azeron prochostile <on|off> (current: " .. tostring(DB.settings.procHostileTargetOnly ~= false) .. ")")
+    end
 
   elseif cmd == "procdebug" then
     -- Scan our Azeron buttons for active proc glow (AssistedCombatHighlightFrame)

@@ -7,6 +7,11 @@ function Indicators.UpdateUsability(ctx)
   if not ctx then return end
   local ms = ctx.currentModifierState or "NONE"
   local buttons = ctx.buttons or {}
+  local hostileRequired = ctx.procHostileTargetOnly == true
+  local hasHostileTarget = true
+  if hostileRequired and ctx.HasHostileTarget then
+    hasHostileTarget = ctx.HasHostileTarget() and true or false
+  end
 
   local glowingSources = ctx.CollectGlowingWoWSources and ctx.CollectGlowingWoWSources() or {}
   local glowingSlots = {}
@@ -50,7 +55,7 @@ function Indicators.UpdateUsability(ctx)
 
       local slot = bd and (ctx.GetLiveActionSlotFromBinding and ctx.GetLiveActionSlotFromBinding(bd))
       if bd and slot then bd.actionSlot = slot end
-      if slot and glowingSlots[slot] then
+      if hasHostileTarget and slot and glowingSlots[slot] then
         showProc = true
         procSource = glowingSourceBySlot[slot]
       end

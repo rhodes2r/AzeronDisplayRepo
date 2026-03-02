@@ -11,6 +11,14 @@ local function fallbackSafeNumber(v, fallback)
   return n
 end
 
+local function debugPrint(...)
+  if D and D.Print then
+    D.Print(...)
+  else
+    print(...)
+  end
+end
+
 local function clearButtonCooldownVisuals(btn)
   if not btn then return end
   if btn.cooldown then
@@ -113,6 +121,36 @@ local function getSpellChargeInfo(spellID, SafeNumber, NormalizeCooldownPair)
   return cur, mx, cs, cd
 end
 
+local function getReadableChargeCount(spellID, SafeNumber, currentFromCharges)
+  local sid = SafeNumber(spellID, 0)
+  if sid <= 0 or not C_Spell then
+    return SafeNumber(currentFromCharges, nil)
+  end
+
+  -- CooldownCompanion-style chain:
+  -- displayCount -> charges.current -> castCount
+  if C_Spell.GetSpellDisplayCount then
+    local okDisp, disp = pcall(C_Spell.GetSpellDisplayCount, sid)
+    if okDisp then
+      local nDisp = SafeNumber(disp, nil)
+      if nDisp ~= nil then return nDisp end
+    end
+  end
+
+  local nCur = SafeNumber(currentFromCharges, nil)
+  if nCur ~= nil then return nCur end
+
+  if C_Spell.GetSpellCastCount then
+    local okCast, castCount = pcall(C_Spell.GetSpellCastCount, sid)
+    if okCast then
+      local nCast = SafeNumber(castCount, nil)
+      if nCast ~= nil then return nCast end
+    end
+  end
+
+  return nil
+end
+
 function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
   if not btn or not bd then
     clearButtonCooldownVisuals(btn)
@@ -125,6 +163,7 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
   local ResolveWoWBindingFrameAndSlot = D.ResolveWoWBindingFrameAndSlot
   local GetLiveActionSlotFromBinding = D.GetLiveActionSlotFromBinding
   local GetWoWButtonCooldown = D.GetWoWButtonCooldown
+  local IsWoWButtonCooldownShown = D.IsWoWButtonCooldownShown
   local GetActionSpellCandidates = D.GetActionSpellCandidates
   local GetSpellCooldownFromActionSlot = D.GetSpellCooldownFromActionSlot
 
@@ -190,6 +229,11 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
       end
     end
     bd._resolvedSpellID = resolvedSpellID
+    local prevChargeSpellID = SafeNumber(bd._chargeSpellIDSeen, 0)
+    if resolvedSpellID > 0 and prevChargeSpellID ~= resolvedSpellID then
+      bd._chargeSpellIDSeen = resolvedSpellID
+      bd._maxChargesSeen = nil
+    end
     local function probeShown(s, d)
       if not scratchCooldown then return false end
       local psNum = SafeNumber(s, nil)
@@ -217,9 +261,17 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
     local spellIsOnGCD = false
     local gcdStart, gcdDur = 0, 0
     local gcdActive = false
+    local gcdState = D.GetGCDState and D.GetGCDState() or nil
+    if gcdState then
+      gcdStart = SafeNumber(gcdState.start, 0)
+      gcdDur = SafeNumber(gcdState.duration, 0)
+      gcdActive = (gcdState.active == true)
+    end
+    local spellPathAvailable = false
+    local spellPathHadData = false
     do
-      -- Capture current GCD timing once per tick.
-      if C_Spell and C_Spell.GetSpellCooldown then
+      -- Capture current GCD timing only when no shared snapshot is available.
+      if (not gcdState) and C_Spell and C_Spell.GetSpellCooldown then
         local gok, ginfo = pcall(C_Spell.GetSpellCooldown, 61304)
         if gok and ginfo then
           gcdStart, gcdDur = NormalizeCooldownPair(SafeNumber(ginfo.startTime, 0), SafeNumber(ginfo.duration, 0))
@@ -247,31 +299,68 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
         end
       end
 
-      -- Prefer direct spell cooldown path (CooldownCompanion-style).
+      -- Prefer direct spell cooldown path (CooldownCompanion-style):
+      -- GetSpellCooldown + GetSpellCooldownDuration + secret-safe scratch probe.
       if resolvedSpellID > 0 and C_Spell and C_Spell.GetSpellCooldown then
+        spellPathAvailable = true
         local ok, info = pcall(C_Spell.GetSpellCooldown, resolvedSpellID)
         if ok and info then
+          spellPathHadData = true
           spellIsOnGCD = (tostring(info.isOnGCD or "false") == "true")
-          local mShown, ms, md, msNum, mdNum = probeShown(info.startTime, info.duration)
-          if mShown then
-            local isGCDOnly = false
-            if msNum and mdNum and gcdStart > 0 and gcdDur > 0 then
-              isGCDOnly = (math.abs(msNum - gcdStart) <= 0.001 and math.abs(mdNum - gcdDur) <= 0.001)
+
+          local isGCDOnly = false
+          local _, _, _, msNum, mdNum = probeShown(info.startTime, info.duration)
+          if msNum and mdNum and gcdStart > 0 and gcdDur > 0 then
+            isGCDOnly = (math.abs(msNum - gcdStart) <= 0.001 and math.abs(mdNum - gcdDur) <= 0.001)
+          end
+          if not isGCDOnly then
+            isGCDOnly = spellIsOnGCD and gcdActive
+          end
+
+          local durationShown = false
+          local ds, dd = 0, 0
+          if C_Spell.GetSpellCooldownDuration then
+            local okDur, dObj = pcall(C_Spell.GetSpellCooldownDuration, resolvedSpellID)
+            if okDur and dObj then
+              local useDurationObj = true
+              if dObj.HasSecretValues then
+                local okSec, sec = pcall(dObj.HasSecretValues, dObj)
+                useDurationObj = okSec and (tostring(sec) == "false")
+              end
+              if useDurationObj then
+                scratchCooldown:Hide()
+                local okSet = pcall(scratchCooldown.SetCooldownFromDurationObject, scratchCooldown, dObj)
+                if okSet and scratchCooldown:IsShown() then
+                  durationShown = true
+                  ds, dd = NormalizeCooldownPair(SafeNumber(info.startTime, 0), SafeNumber(info.duration, 0))
+                end
+                scratchCooldown:Hide()
+              else
+                local sShown, s, d = probeShown(info.startTime, info.duration)
+                if sShown then
+                  durationShown = true
+                  ds, dd = s, d
+                end
+              end
             end
-            if not isGCDOnly then
-              isGCDOnly = spellIsOnGCD and gcdActive
+          end
+
+          if (not durationShown) then
+            local sShown, s, d = probeShown(info.startTime, info.duration)
+            if sShown then
+              durationShown = true
+              ds, dd = s, d
             end
-            if not isGCDOnly and isLikelyGCDCandidate(ms, md, spellIsOnGCD, gcdStart, gcdDur) then
-              isGCDOnly = true
-            end
-            if not isGCDOnly then
-              mainShown, mainStart, mainDur = true, ms, md
-              mainRawStart, mainRawDur = info.startTime, info.duration
-            end
+          end
+
+          if durationShown and (not isGCDOnly) and (not isLikelyGCDCandidate(ds, dd, spellIsOnGCD, gcdStart, gcdDur)) then
+            mainShown, mainStart, mainDur = true, ds, dd
+            mainRawStart, mainRawDur = info.startTime, info.duration
           end
         end
       end
-      if (not mainShown) and GetWoWButtonCooldown then
+      local allowFallbackMain = (resolvedSpellID <= 0) or (not spellPathAvailable) or ((not spellPathHadData) and (not mainShown))
+      if (not mainShown) and allowFallbackMain and GetWoWButtonCooldown then
         local ws, wd = GetWoWButtonCooldown(bd)
         local mShown, ms, md = probeShown(ws, wd)
         if mShown and not isLikelyGCDCandidate(ms, md, spellIsOnGCD, gcdStart, gcdDur) then
@@ -279,7 +368,7 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
           mainRawStart, mainRawDur = ws, wd
         end
       end
-      if (not mainShown) and GetActionCooldown then
+      if (not mainShown) and allowFallbackMain and GetActionCooldown then
         local ok, s, d = pcall(GetActionCooldown, slot)
         if ok then
           local mShown, ms, md = probeShown(s, d)
@@ -289,7 +378,7 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
           end
         end
       end
-      if (not mainShown) and GetSpellCooldownFromActionSlot then
+      if (not mainShown) and allowFallbackMain and GetSpellCooldownFromActionSlot then
         local ss, sd = GetSpellCooldownFromActionSlot(slot, resolvedSpellID)
         local mShown, ms, md = probeShown(ss, sd)
         if mShown and not isLikelyGCDCandidate(ms, md, spellIsOnGCD, gcdStart, gcdDur) then
@@ -325,13 +414,25 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
         chargeStart, chargeDur = ss, sd
         safeCharges, safeMaxCharges = SafeNumber(charges, nil), SafeNumber(maxCharges, nil)
       end
+
+      -- Keep current charges readable when APIs go secret/nil in combat.
+      local readableCharges = getReadableChargeCount(resolvedSpellID, SafeNumber, safeCharges)
+      if readableCharges ~= nil then
+        charges = readableCharges
+        safeCharges = readableCharges
+      end
     end
 
-    if safeMaxCharges and safeMaxCharges > 0 then
-      bd._isChargeSpell = (safeMaxCharges > 1)
-    else
-      bd._isChargeSpell = false
+    -- Sticky charge classification: once maxCharges > 1 is observed for this spell,
+    -- keep treating it as a charge spell even when combat APIs return secret/nil.
+    if safeMaxCharges and safeMaxCharges > 1 then
+      bd._maxChargesSeen = math.max(SafeNumber(bd._maxChargesSeen, 0), safeMaxCharges)
     end
+    if (safeMaxCharges == nil or safeMaxCharges <= 0) and SafeNumber(bd._maxChargesSeen, 0) > 1 then
+      safeMaxCharges = SafeNumber(bd._maxChargesSeen, nil)
+      maxCharges = safeMaxCharges
+    end
+    bd._isChargeSpell = (safeMaxCharges ~= nil and safeMaxCharges > 1) or (SafeNumber(bd._maxChargesSeen, 0) > 1)
 
     if GetActionCount then
       local okn, n = pcall(GetActionCount, slot)
@@ -355,6 +456,7 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
         chargeRawDur = (chargeDurRaw ~= nil) and chargeDurRaw or chargeDur
       end
     end
+    bd._chargeRecharging = chargeShown and true or false
 
     local mainRemain = (SafeNumber(mainStart, nil) and SafeNumber(mainDur, nil)) and math.max(0, (mainStart + mainDur) - now) or 0
     local chargeRemain = (SafeNumber(safeCStart, nil) and SafeNumber(safeCDur, nil)) and math.max(0, (safeCStart + safeCDur) - now) or 0
@@ -406,7 +508,33 @@ function CooldownEngine.UpdateButtonCooldown(btn, bd, modifierState)
   elseif displayStart > 0 and displayDur > 0 then
     hasDisplayCooldown = true
   end
-  local remain = (displayStart > 0 and displayDur > 0) and math.max(0, (displayStart + displayDur) - now) or 0
+  local canComputeRemain = (displayStart > 0 and displayDur > 0)
+  local remain = canComputeRemain and math.max(0, (displayStart + displayDur) - now) or 0
+  -- Do not aggressively suppress by computed remain; scratch probe / source shown-state
+  -- is more reliable for secret-value cooldowns.
+
+  do
+    local wowShown = false
+    if IsWoWButtonCooldownShown then
+      wowShown = IsWoWButtonCooldownShown(bd) and true or false
+    end
+    local sourceReady = (not bd._mainCDShown) and (not bd._chargeRecharging) and (not (bd._isChargeSpell and safeCharges ~= nil and safeCharges == 0))
+    local falsePositive = hasDisplayCooldown and sourceReady and (not wowShown)
+    local mismatchDebugEnabled = (D and D.IsCDMismatchDebugEnabled and D.IsCDMismatchDebugEnabled()) and true or false
+    if falsePositive and mismatchDebugEnabled then
+      if not bd._falsePositiveLogged then
+        bd._falsePositiveLogged = true
+        debugPrint("AzeronDisplay: cdmismatch key=" .. tostring(btn.keyID)
+          .. " bind=" .. tostring(bindKey)
+          .. " slot=" .. tostring(slot or "-")
+          .. " rem=" .. string.format("%.1f", remain)
+          .. " wowShown=" .. tostring(wowShown))
+      end
+    else
+      bd._falsePositiveLogged = false
+    end
+  end
+
   if hasDisplayCooldown then
     if cdRawStart ~= nil and cdRawDur ~= nil then
       btn.cooldown:SetCooldown(cdRawStart, cdRawDur)
